@@ -487,6 +487,84 @@ fn parse_weight_map(text: &str) -> Result<HashMap<String, String>> {
     Ok(out)
 }
 
+impl Package {
+    /// Raw bytes of `name`.
+    pub fn raw(&self, name: &str) -> Result<(TensorRef, Vec<u8>)> {
+        let shard = self.shard_for(name)?;
+        let t = shard
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("{name}: in the index but not in its shard's header"))?;
+        Ok((t.clone(), shard.bytes(&t).to_vec()))
+    }
+
+    /// An unquantised tensor as f32. `F32` is reinterpreted and `BF16` widened; anything
+    /// else is an error rather than a silent zero-fill, because a role that arrives as
+    /// I8 here means the caller asked for the wrong tensor.
+    pub fn f32_tensor(&self, name: &str) -> Result<Vec<f32>> {
+        let (t, b) = self.raw(name)?;
+        match t.dtype {
+            Dtype::F32 => Ok(b
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect()),
+            Dtype::BF16 => Ok(b
+                .chunks_exact(2)
+                .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                .collect()),
+            Dtype::F16 => Ok(b
+                .chunks_exact(2)
+                .map(|c| half_to_f32(u16::from_le_bytes([c[0], c[1]])))
+                .collect()),
+            other => bail!("{name}: expected a float tensor, got {other:?}"),
+        }
+    }
+
+    /// A W8A8 tensor dequantised to f32: `w[i,k] = (q[i,k] - offset[i]) * scale[i]`.
+    ///
+    /// The scale/offset companions are per OUTPUT CHANNEL, which is the row axis here.
+    /// This is the host-side reference for the certified device kernel.
+    pub fn dequant_tensor(&self, name: &str) -> Result<Vec<f32>> {
+        let (t, qb) = self.raw(name)?;
+        if t.dtype != Dtype::I8 {
+            bail!("{name}: expected I8 for a w8a8 weight, got {:?}", t.dtype);
+        }
+        let rows = t.shape.first().copied().unwrap_or(1) as usize;
+        let cols: usize = t.shape.iter().skip(1).map(|d| *d as usize).product::<usize>().max(1);
+        let q: Vec<i8> = qb.iter().map(|b| *b as i8).collect();
+        if q.len() != rows * cols {
+            bail!(
+                "{name}: {} int8 for a {rows}x{cols} tensor",
+                q.len()
+            );
+        }
+        let scale = self.f32_tensor(&format!("{name}_scale"))?;
+        // The offset is optional: many exports are symmetric and omit it, and a missing
+        // companion must mean ZERO offset rather than an error (the certified kernel
+        // subtracts offset[i], which is 0 for those packs).
+        let offset = match self.f32_tensor(&format!("{name}_offset")) {
+            Ok(v) => v,
+            Err(_) => vec![0.0; rows],
+        };
+        Ok(dequant_w8a8(&q, &scale, &offset, rows, cols))
+    }
+}
+
+/// IEEE binary16 -> f32.
+fn half_to_f32(h: u16) -> f32 {
+    let s = (h >> 15) & 1;
+    let e = (h >> 10) & 0x1f;
+    let m = h & 0x3ff;
+    let v = if e == 0 {
+        (m as f32) * 2f32.powi(-24)
+    } else if e == 31 {
+        if m == 0 { f32::INFINITY } else { f32::NAN }
+    } else {
+        (1.0 + (m as f32) / 1024.0) * 2f32.powi(e as i32 - 15)
+    };
+    if s == 1 { -v } else { v }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +592,90 @@ mod tests {
         let p = dir.join("s.safetensors");
         std::fs::write(&p, bytes).unwrap();
         Shard::open(&p).unwrap()
+    }
+
+
+    /// A multi-tensor safetensors file: (name, dtype, shape, bytes) in order.
+    fn write_multi(items: &[(&str, &str, Vec<u64>, Vec<u8>)]) -> Vec<u8> {
+        let mut entries = Vec::new();
+        let mut off = 0u64;
+        let mut data = Vec::new();
+        for (name, dtype, shape, bytes) in items {
+            let end = off + bytes.len() as u64;
+            entries.push(format!(
+                "\"{name}\":{{\"dtype\":\"{dtype}\",\"shape\":{shape:?},\"data_offsets\":[{off},{end}]}}"
+            ));
+            off = end;
+            data.extend_from_slice(bytes);
+        }
+        let header = format!("{{{}}}", entries.join(","));
+        let mut out = Vec::new();
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(&data);
+        out
+    }
+
+    /// A package directory: one shard plus the index that points at it.
+    fn package_dir(tag: &str, shard: &[u8], names: &[&str]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("pkg-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("s-00001.safetensors"), shard).unwrap();
+        let map: Vec<String> = names
+            .iter()
+            .map(|n| format!("\"{n}\":\"s-00001.safetensors\""))
+            .collect();
+        let idx = format!("{{\"metadata\":{{}},\"weight_map\":{{{}}}}}", map.join(","));
+        std::fs::write(dir.join("quant_model_weights.safetensors.index.json"), idx).unwrap();
+        dir
+    }
+
+    #[test]
+    fn dequantises_a_package_tensor_with_its_scale_and_offset() {
+        // 2x2: row 0 scale 1 offset 0; row 1 scale 10 offset 1 -> same numbers as the
+        // unit test above, but now through the package reader.
+        let q = vec![1u8, 2, 3, 4]; // read as i8: 1,2,3,4
+        let mut sc = Vec::new();
+        for v in [1.0f32, 10.0] { sc.extend_from_slice(&v.to_le_bytes()); }
+        let mut of = Vec::new();
+        for v in [0.0f32, 1.0] { of.extend_from_slice(&v.to_le_bytes()); }
+        let shard = write_multi(&[
+            ("w.weight", "I8", vec![2, 2], q),
+            ("w.weight_scale", "F32", vec![2, 1], sc),
+            ("w.weight_offset", "F32", vec![2, 1], of),
+        ]);
+        let dir = package_dir("w8a8", &shard, &["w.weight", "w.weight_scale", "w.weight_offset"]);
+        let pkg = Package::open(&dir).unwrap();
+        assert_eq!(pkg.dequant_tensor("w.weight").unwrap(), vec![1.0, 2.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn a_missing_offset_means_zero_not_an_error() {
+        // Many exports are symmetric and omit `weight_offset`. The certified kernel
+        // subtracts offset[i]; treating "absent" as an error would refuse those packs,
+        // and treating it as anything but 0.0 would shift every weight.
+        let mut sc = Vec::new();
+        for v in [2.0f32, 2.0] { sc.extend_from_slice(&v.to_le_bytes()); }
+        let shard = write_multi(&[
+            ("w.weight", "I8", vec![2, 1], vec![3u8, 4]),
+            ("w.weight_scale", "F32", vec![2, 1], sc),
+        ]);
+        let dir = package_dir("nooff", &shard, &["w.weight", "w.weight_scale"]);
+        let pkg = Package::open(&dir).unwrap();
+        assert_eq!(pkg.dequant_tensor("w.weight").unwrap(), vec![6.0, 8.0]);
+    }
+
+    #[test]
+    fn bf16_widens_by_shifting_into_f32() {
+        // 1.0 in bf16 is 0x3F80; widening must give exactly 1.0, and 0.5 (0x3F00) exactly
+        // 0.5. A reader that byte-swapped would give ~3e-41 and this would fail loudly.
+        let mut b = Vec::new();
+        for h in [0x3F80u16, 0x3F00, 0x0000] { b.extend_from_slice(&h.to_le_bytes()); }
+        let shard = write_multi(&[("n", "BF16", vec![3], b)]);
+        let dir = package_dir("bf16", &shard, &["n"]);
+        let pkg = Package::open(&dir).unwrap();
+        assert_eq!(pkg.f32_tensor("n").unwrap(), vec![1.0, 0.5, 0.0]);
     }
 
     #[test]
