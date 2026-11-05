@@ -161,6 +161,10 @@ pub trait WeightSource {
     fn dequant_f32(&self, h: &crate::layer_view::TensorHandle) -> Result<Vec<f32>>;
     /// The role's bytes, borrowed when the container can lend them.
     fn bytes_for(&self, h: &crate::layer_view::TensorHandle) -> Result<std::borrow::Cow<'_, [u8]>>;
+    /// One layer's role-keyed handles. Borrowed for a GGUF view, owned for a package.
+    fn layer(&self, idx: u32) -> Result<std::borrow::Cow<'_, crate::layer_view::LayerView>>;
+    /// The model-wide roles (`token_embd`, `output`, the hc tails).
+    fn globals(&self) -> Result<std::borrow::Cow<'_, std::collections::BTreeMap<&'static str, crate::layer_view::TensorHandle>>>;
 }
 
 impl WeightSource for crate::layer_view::LayerViews {
@@ -169,6 +173,15 @@ impl WeightSource for crate::layer_view::LayerViews {
     }
     fn bytes_for(&self, h: &crate::layer_view::TensorHandle) -> Result<std::borrow::Cow<'_, [u8]>> {
         crate::layer_view::LayerViews::bytes_for(self, h)
+    }
+    fn layer(&self, idx: u32) -> Result<std::borrow::Cow<'_, crate::layer_view::LayerView>> {
+        Ok(std::borrow::Cow::Borrowed(crate::layer_view::LayerViews::layer(self, idx)))
+    }
+    fn globals(
+        &self,
+    ) -> Result<std::borrow::Cow<'_, std::collections::BTreeMap<&'static str, crate::layer_view::TensorHandle>>>
+    {
+        Ok(std::borrow::Cow::Borrowed(&self.global))
     }
 }
 
@@ -198,6 +211,55 @@ impl WeightSource for PackageViews<'_> {
     }
     fn bytes_for(&self, h: &crate::layer_view::TensorHandle) -> Result<std::borrow::Cow<'_, [u8]>> {
         Ok(std::borrow::Cow::Owned(self.pkg.raw(&h.name)?.1))
+    }
+
+    /// Build the layer from the ROLE MAP, naming each handle with the PACKAGE tensor that
+    /// carries it. The loop keys on role names (`attn_q_a`), which are the same in both
+    /// containers, so nothing below the trait has to translate.
+    fn layer(&self, idx: u32) -> Result<std::borrow::Cow<'_, crate::layer_view::LayerView>> {
+        use crate::layer_view::{LayerView, TensorHandle};
+        let mut handles = std::collections::BTreeMap::new();
+        for r in layer_roles(idx as usize) {
+            let t = self.pkg.tensor(&r.name)?;
+            handles.insert(
+                r.role,
+                TensorHandle {
+                    name: r.name,
+                    role: r.role,
+                    // The package's own dtype is authoritative; `ttype` is a GGML type and is
+                    // not consulted for package tensors.
+                    ttype: crate::gguf::GgmlType::F32,
+                    dims: t.shape.clone(),
+                    abs_offset: 0,
+                    byte_size: t.nbytes(),
+                },
+            );
+        }
+        Ok(std::borrow::Cow::Owned(LayerView { layer_idx: idx, handles }))
+    }
+
+    fn globals(
+        &self,
+    ) -> Result<std::borrow::Cow<'_, std::collections::BTreeMap<&'static str, crate::layer_view::TensorHandle>>>
+    {
+        use crate::layer_view::TensorHandle;
+        let mut g = std::collections::BTreeMap::new();
+        for (role, name) in [("token_embd", "embed.weight"), ("output", "head.weight")] {
+            if let Ok(t) = self.pkg.tensor(name) {
+                g.insert(
+                    role,
+                    TensorHandle {
+                        name: name.to_string(),
+                        role,
+                        ttype: crate::gguf::GgmlType::F32,
+                        dims: t.shape.clone(),
+                        abs_offset: 0,
+                        byte_size: t.nbytes(),
+                    },
+                );
+            }
+        }
+        Ok(std::borrow::Cow::Owned(g))
     }
 }
 
