@@ -1,0 +1,115 @@
+{
+ "what": "Every declared kernel that NEITHER emitter places. This is the tile-rs acceptance backlog: the point of keeping it is that a kernel the AscendC and PTO paths both refuse should still be a target the lift can take, rather than being dropped from the inventory. `rust/tests/test_tile_rs_acceptance.py` keeps this in step with the manifests, so a kernel that starts placing must leave the file. Each entry also records `needs`: the mechanism that would place it. A backlog without that is a list of complaints. One correction: an earlier version of this file said rspto had no chunked path. It has one for blocked matmul; the gap is that it does not generalise to an elementwise chain.",
+ "kernels": {
+  "deepseek_v41/argmax_v41_8x129280": {
+   "pto": "NPU tile bound (arch a2a3): row_major data tile cols=2020 * 4B = 8080B spans multiple 512B fractals with bad stride (C2); pad cols so cols*sizeof(dtype) % 512 == 0",
+   "ascendc": "mlir_to_cpp: __tile_argmax_f32 over 8 rows -- the scan carries a single running index, so only one row is expressible; emit one call per row.",
+   "needs": "a PTO arm and a generator section; this row is hand-captured"
+  },
+  "deepseek_v41/argmax_v41_8x131072_pad": {
+   "pto": "NPU UB budget (arch a2a3): tile of 65536B at offset 131584B would use 197120B > UB_SIZE 194560B (C1)",
+   "ascendc": "mlir_to_cpp: __tile_argmax_f32 over 8 rows -- the scan carries a single running index, so only one row is expressible; emit one call per row.",
+   "needs": "the chunked path GENERALISED in rspto. It is not chunk-less -- the blocked-matmul path already emits `scf.for` over N-blocks with a dynamic `%n_off` in its partition_view (mlir_to_pto.rs:752-775) -- but that machinery is specific to the cube/tpop path and does not reach an elementwise chain. What is missing is the generalisation, plus, ONLY for a width with no 32-byte-aligned divisor, an epilogue for the tail -- `plan_chunks` now prefers an exact divisor so the loop is uniform and a static-shape tile can be reused"
+  },
+  "deepseek_v41/gemm_f16_lmhead_v41_16x5120x16160": {
+   "pto": "blocked matmul: N=16160 must be a multiple of Nb=64",
+   "ascendc": "UB overflow in kernel 'bm_gemm_f16_16_5120_16160': buffer 0 needs 81920 elements (163840 bytes) but only 62784 bytes available per buffer (188416 UB / 3 slots). Reduce the number of buffers or the element count.",
+   "needs": "a PTO arm and a generator section; this row is hand-captured"
+  },
+  "deepseek_v41/gemm_i8_v41_1x5120x2304": {
+   "pto": "matmul_i8: both operand loads must be deferred for blocked emit (a.deferred=false, b.deferred=false); detect_blocked_matmul_loads must mark i8 matmul inputs",
+   "ascendc": "mlir_to_cpp has no arm for `__tile_matmul_i8_acc_i32_dequant_f16`; implemented: __tile_matmul_f32, __tile_matmul_transposed_f32, __tile_matmul_cube, __tile_matmul_f16, __tile_matmul_transposed_f16. Emitting it would sile",
+   "needs": "a PTO arm and a generator section; this row is hand-captured"
+  },
+  "deepseek_v41/mx4pk_v41_5120x2304": {
+   "pto": "mul_mv_id_mxfp4_pk: pair count (80) must be a multiple of the 64 chunk",
+   "ascendc": "mlir_to_cpp has no arm for `__tile_mul_mv_id_mxfp4_pk_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "needs": "a PTO arm and a generator section; this row is hand-captured"
+  },
+  "deepseek_v41/quant_i8_v41_8x5120": {
+   "pto": "NPU UB budget (arch a2a3): tile of 163840B at offset 164352B would use 328192B > UB_SIZE 194560B (C1)",
+   "ascendc": "mlir_to_cpp has no arm for `__tile_quantize_f32_i8`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "needs": "the chunked path GENERALISED in rspto. It is not chunk-less -- the blocked-matmul path already emits `scf.for` over N-blocks with a dynamic `%n_off` in its partition_view (mlir_to_pto.rs:752-775) -- but that machinery is specific to the cube/tpop path and does not reach an elementwise chain. What is missing is the generalisation, plus, ONLY for a width with no 32-byte-aligned divisor, an epilogue for the tail -- `plan_chunks` now prefers an exact divisor so the loop is uniform and a static-shape tile can be reused"
+  },
+  "deepseek_v41/rmsnorm_v41_8x5120": {
+   "pto": "NPU UB budget (arch a2a3): tile of 163840B at offset 163840B would use 327680B > UB_SIZE 194560B (C1)",
+   "ascendc": "UB overflow in kernel 'bm_rmsnorm_8_5120': buffer 0 needs 40960 elements (163840 bytes) but only 37664 bytes available per buffer (188416 UB / 5 slots). Reduce the number of buffers or the element count.",
+   "needs": "the chunked path GENERALISED in rspto. It is not chunk-less -- the blocked-matmul path already emits `scf.for` over N-blocks with a dynamic `%n_off` in its partition_view (mlir_to_pto.rs:752-775) -- but that machinery is specific to the cube/tpop path and does not reach an elementwise chain. What is missing is the generalisation, plus, ONLY for a width with no 32-byte-aligned divisor, an epilogue for the tail -- `plan_chunks` now prefers an exact divisor so the loop is uniform and a static-shape tile can be reused"
+  },
+  "deepseek_v41/embedding_v41_129280x5120": {
+   "pto": "mlir_to_pto has no arm for `__tile_embedding_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "ascendc": "UB overflow in kernel 'v41_embedding_5120': __tile_embedding_f32 gathers rows from a tile that holds 5120 element(s) while the vocabulary needs 661913600 (vocab x dim). The table cannot be resident -- it is far larger than the unified buffe",
+   "needs": "a PTO ARM for the intrinsic it names; the declaration already exists in tile_std"
+  },
+  "deepseek_v41/attention_decode_v41_1x512": {
+   "pto": "mlir_to_pto has no arm for `__tile_attention_decode_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "ascendc": "mlir_to_cpp has no arm for `__tile_attention_decode_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "needs": "a PTO ARM for the intrinsic it names; the declaration already exists in tile_std"
+  },
+  "glm_5_3/argmax_glm53_1x154880": {
+   "pto": "NPU tile bound (arch a2a3): row_major data tile cols=19360 * 4B = 77440B spans multiple 512B fractals with bad stride (C2); pad cols so cols*sizeof(dtype) % 512 == 0",
+   "ascendc": "UB overflow in kernel 'glm53_argmax_154880': buffer 0 needs 154880 elements (619520 bytes), which is larger than the ENTIRE 188416 byte unified buffer. No division of the budget can hold this tile -- it has to be streamed from global memory",
+   "needs": "a PTO arm and a generator section; this row is hand-captured"
+  },
+  "glm_5_3/attention_decode_glm53_1x256": {
+   "pto": "mlir_to_pto has no arm for `__tile_attention_decode_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "ascendc": "mlir_to_cpp has no arm for `__tile_attention_decode_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "needs": "a PTO ARM for the intrinsic it names; the declaration already exists in tile_std"
+  },
+  "glm_5_3/embedding_glm53_154880x4096": {
+   "pto": "mlir_to_pto has no arm for `__tile_embedding_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "ascendc": "UB overflow: `__tile_embedding_f32` gathers rows from a tile that holds `dim` element(s) while the vocabulary needs `vocab * dim`. The table cannot be resident, so its rows must be copied from global memory one at a time, and `mlir_to_cpp` ",
+   "needs": "a PTO ARM for the intrinsic it names; the declaration already exists in tile_std"
+  },
+  "glm_5_3/lm_head_glm53_1x154880": {
+   "pto": "NPU UB budget (arch a2a3): tile of 619520B at offset 0B would use 619520B > UB_SIZE 194560B (C1)",
+   "ascendc": "UB overflow in kernel 'glm53_lm_head_154880': buffer 0 needs 154880 elements (619520 bytes), which is larger than the ENTIRE 188416 byte unified buffer. No division of the budget can hold this tile -- it has to be streamed from global memor",
+   "needs": "the chunked path GENERALISED in rspto. It is not chunk-less -- the blocked-matmul path already emits `scf.for` over N-blocks with a dynamic `%n_off` in its partition_view (mlir_to_pto.rs:752-775) -- but that machinery is specific to the cube/tpop path and does not reach an elementwise chain. What is missing is the generalisation, plus, ONLY for a width with no 32-byte-aligned divisor, an epilogue for the tail -- `plan_chunks` now prefers an exact divisor so the loop is uniform and a static-shape tile can be reused"
+  },
+  "glm_5_3/proj_q_b_glm53_1x16384": {
+   "pto": "NPU UB budget (arch a2a3): tile of 65536B at offset 131072B would use 196608B > UB_SIZE 194560B (C1)",
+   "ascendc": "UB overflow in kernel 'glm53_proj_q_b': buffer 0 needs 16384 elements (65536 bytes) but only 18816 bytes available per buffer (188416 UB / 10 slots). Reduce the number of buffers or the element count.",
+   "needs": "the chunked path GENERALISED in rspto. It is not chunk-less -- the blocked-matmul path already emits `scf.for` over N-blocks with a dynamic `%n_off` in its partition_view (mlir_to_pto.rs:752-775) -- but that machinery is specific to the cube/tpop path and does not reach an elementwise chain. What is missing is the generalisation, plus, ONLY for a width with no 32-byte-aligned divisor, an epilogue for the tail -- `plan_chunks` now prefers an exact divisor so the loop is uniform and a static-shape tile can be reused"
+  },
+  "glm_5_3/router_topk_glm53_1x288_k8": {
+   "pto": "NPU tile bound (arch a2a3): row_major data tile cols=288 * 4B = 1152B spans multiple 512B fractals with bad stride (C2); pad cols so cols*sizeof(dtype) % 512 == 0",
+   "ascendc": "mlir_to_cpp has no arm for `__tile_topk_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "needs": "a PTO arm and a generator section; this row is hand-captured"
+  },
+  "glm_5_3/proj_kv_b_glm53_1x28672": {
+   "pto": "NPU UB budget (arch a2a3): tile of 114688B at offset 114688B would use 229376B > UB_SIZE 194560B (C1)",
+   "ascendc": "UB overflow in kernel 'glm53_proj_kv_b': buffer 0 needs 28672 elements (114688 bytes) but only 18816 bytes available per buffer (188416 UB / 10 slots)",
+   "needs": "the chunked path GENERALISED in rspto. It is not chunk-less -- the blocked-matmul path already emits `scf.for` over N-blocks with a dynamic `%n_off` in its partition_view (mlir_to_pto.rs:752-775) -- but that machinery is specific to the cube/tpop path and does not reach an elementwise chain. What is missing is the generalisation, plus, ONLY for a width with no 32-byte-aligned divisor, an epilogue for the tail -- `plan_chunks` now prefers an exact divisor so the loop is uniform and a static-shape tile can be reused"
+  },
+  "kimi_k3/argmax_k3_1x163840": {
+   "pto": "NPU UB budget (arch a2a3): tile of 81920B at offset 164352B would use 246272B > UB_SIZE 194560B (C1)",
+   "ascendc": "UB overflow in kernel 'k3_argmax_163840': buffer 0 needs 163840 elements (655360 bytes), which is larger than the ENTIRE 188416 byte unified buffer. No division of the budget can hold this tile -- it has to be streamed from global memory in",
+   "needs": "the chunked path GENERALISED in rspto. It is not chunk-less -- the blocked-matmul path already emits `scf.for` over N-blocks with a dynamic `%n_off` in its partition_view (mlir_to_pto.rs:752-775) -- but that machinery is specific to the cube/tpop path and does not reach an elementwise chain. What is missing is the generalisation, plus, ONLY for a width with no 32-byte-aligned divisor, an epilogue for the tail -- `plan_chunks` now prefers an exact divisor so the loop is uniform and a static-shape tile can be reused"
+  },
+  "kimi_k3/attention_decode_k3_1x128": {
+   "pto": "mlir_to_pto has no arm for `__tile_attention_decode_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "ascendc": "mlir_to_cpp has no arm for `__tile_attention_decode_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "needs": "a PTO ARM for the intrinsic it names; the declaration already exists in tile_std"
+  },
+  "kimi_k3/embedding_k3_163840x7168": {
+   "pto": "mlir_to_pto has no arm for `__tile_embedding_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "ascendc": "UB overflow: `__tile_embedding_f32` gathers rows from a tile that holds `dim` element(s) while the vocabulary needs `vocab * dim`. The table cannot be resident, so its rows must be copied from global memory one at a time, and `mlir_to_cpp` ",
+   "needs": "a PTO ARM for the intrinsic it names; the declaration already exists in tile_std"
+  },
+  "kimi_k3/lm_head_k3_1x163840": {
+   "pto": "NPU UB budget (arch a2a3): tile of 655360B at offset 0B would use 655360B > UB_SIZE 194560B (C1)",
+   "ascendc": "UB overflow in kernel 'k3_lm_head_163840': buffer 0 needs 163840 elements (655360 bytes), which is larger than the ENTIRE 188416 byte unified buffer. No division of the budget can hold this tile -- it has to be streamed from global memory i",
+   "needs": "the chunked path GENERALISED in rspto. It is not chunk-less -- the blocked-matmul path already emits `scf.for` over N-blocks with a dynamic `%n_off` in its partition_view (mlir_to_pto.rs:752-775) -- but that machinery is specific to the cube/tpop path and does not reach an elementwise chain. What is missing is the generalisation, plus, ONLY for a width with no 32-byte-aligned divisor, an epilogue for the tail -- `plan_chunks` now prefers an exact divisor so the loop is uniform and a static-shape tile can be reused"
+  },
+  "kimi_k3/proj_q_b_k3_1x18432": {
+   "pto": "NPU UB budget (arch a2a3): tile of 73728B at offset 147456B would use 221184B > UB_SIZE 194560B (C1)",
+   "ascendc": "UB overflow in kernel 'k3_proj_q_b': buffer 0 needs 18432 elements (73728 bytes) but only 18816 bytes available per buffer (188416 UB / 10 slots)",
+   "needs": "the chunked path GENERALISED in rspto. It is not chunk-less -- the blocked-matmul path already emits `scf.for` over N-blocks with a dynamic `%n_off` in its partition_view (mlir_to_pto.rs:752-775) -- but that machinery is specific to the cube/tpop path and does not reach an elementwise chain. What is missing is the generalisation, plus, ONLY for a width with no 32-byte-aligned divisor, an epilogue for the tail -- `plan_chunks` now prefers an exact divisor so the loop is uniform and a static-shape tile can be reused"
+  },
+  "kimi_k3/proj_kv_b_k3_1x24576": {
+   "pto": "NPU UB budget (arch a2a3): tile of 98304B at offset 98304B would use 196608B > UB_SIZE 194560B (C1)",
+   "ascendc": "UB overflow in kernel 'k3_proj_kv_b': buffer 0 needs 24576 elements (98304 bytes) but only 18816 bytes available per buffer (188416 UB / 10 slots)",
+   "needs": "the chunked path GENERALISED in rspto. It is not chunk-less -- the blocked-matmul path already emits `scf.for` over N-blocks with a dynamic `%n_off` in its partition_view (mlir_to_pto.rs:752-775) -- but that machinery is specific to the cube/tpop path and does not reach an elementwise chain. What is missing is the generalisation, plus, ONLY for a width with no 32-byte-aligned divisor, an epilogue for the tail -- `plan_chunks` now prefers an exact divisor so the loop is uniform and a static-shape tile can be reused"
+  }
+ }
+}

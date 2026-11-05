@@ -1,0 +1,41 @@
+Narration cue sheet -- ds4-rs-ascend
+Timestamps are at DEMO_SPEED=1.50 and shift with it.
+Read each line at its mark; the terminal holds for it.
+
+00:00	SECTION: ds4-rs-ascend -- deploying DeepSeek V4.1 Flash
+00:03	A serving utility. Memory profile, parallel split, kernel-set registry.
+00:10	A version line that identifies the build it came from.
+00:22	SECTION: The command surface
+00:47	SECTION: Two tiers of help, by design
+00:50	The everyday options above; the expert knobs only when asked for.
+00:53	An advanced flag still WORKS without this -- it only governs whether it is documented,
+00:56	so a support engineer can direct someone to one without it being noise for everyone.
+01:25	SECTION: What needs a card, and what the tool says when there is none
+01:28	This machine has no Ascend driver. Watch how the memory profile reports that.
+01:35	That refusal is intended: it names the missing driver and the command it tried, not a stack trace
+01:40	And planning needs the same profile, so it stops at the same place.
+01:47	That refusal is intended: a capacity question needs a box: --mem-source offers npu-smi or acl, nothing synthetic
+01:52	Worth being exact about this. The crate's manifest says the planning half works
+01:55	without the ascend cargo feature, and that is true -- but the feature was never the
+01:58	only dependency. The driver has to be on PATH either way.
+02:16	SECTION: What the split would be chosen from
+02:19	--mode is the deployment INTENT, and the split follows rather than being picked:
+02:22	latency for one user; throughput for aggregate tokens per second;
+02:25	balanced for a middle point; max-context for the longest context the box can hold.
+02:28	TP, DP, EP and PP are not a free choice -- two do nothing for a single stream,
+02:31	and two cost memory linearly, so the configuration follows from the objective.
+02:49	SECTION: And what this tool does NOT claim, in its own words
+02:52	The parallel module's own header says it: nothing in it has run on multiple chips.
+02:55	The collective cost is an assumption, and so is the claim that n host links
+02:58	deliver n times one link's bandwidth. That is the first thing to measure.
+03:01	Saying so is part of the tool rather than a footnote somewhere else.
+03:19	SECTION: The kernel-set registry, which does work here
+03:22	Kernel sets are content-addressed, hashed, and their index is signature-verified.
+03:29	Empty on a fresh box, and it says how to get some rather than just reporting nothing.
+03:44	SECTION: The index is signature-verified
+03:47	Each set is content-addressed and hashed, and the index that names them is signed.
+03:50	The check answers one question: are these the kernels that were published.
+04:13	SECTION: Tuning for this box
+04:16	profile sweeps launch and tiling knobs on this silicon and writes a tuning file
+04:19	the deploy step then loads. The description is always available, so the
+04:22	capability stays discoverable before anyone spends a box on it.

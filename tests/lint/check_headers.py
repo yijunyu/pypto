@@ -40,6 +40,17 @@ C_HEADER = """
  */
 """.strip()
 
+RS_HEADER = """
+// Copyright (c) PyPTO Contributors.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+// -----------------------------------------------------------------------------------------------------------
+""".strip()
+
 # File extension to header mapping
 FILE_TYPE_HEADERS = {
     # Python files
@@ -59,6 +70,10 @@ FILE_TYPE_HEADERS = {
     ".sh": PY_HEADER,
     # Configuration files
     ".toml": PY_HEADER,
+    # Rust. Line comments rather than the C block form, because a Rust file may
+    # open with inner attributes (`#![no_core]`) and a `//` run is the only
+    # header shape that can precede those without moving them.
+    ".rs": RS_HEADER,
 }
 
 # Files matched by name (not extension)

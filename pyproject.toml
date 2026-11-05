@@ -164,7 +164,7 @@ cmake.args = [
 # profiles are the migration backlog — delete an entry when its tree goes
 # strict. New files in profiled trees are born basic; files outside the
 # profiles must be born strict.
-include = ["python/pypto", "tests"]
+include = ["python/pypto", "tests", "rust/tests"]
 exclude = ["**/__pycache__", "build", "dist", "tests/st", "tests/ut/jit/test_roundtrip.py"]
 extraPaths = ["python", "."]
 typeCheckingMode = "strict"
@@ -181,6 +181,30 @@ reportUnnecessaryTypeIgnoreComment = true
 # return paths. This mirrors the migration line's end-state configuration.
 [[tool.pyright.executionEnvironments]]
 root = "tests"
+reportUnusedClass = false
+reportUnknownVariableType = false
+reportUnknownMemberType = false
+reportUnnecessaryIsInstance = false
+reportMissingTypeArgument = false
+reportUnnecessaryTypeIgnoreComment = false
+reportUnknownLambdaType = false
+reportUnnecessaryCast = false
+reportUnknownParameterType = false
+reportUnknownArgumentType = false
+reportUnusedFunction = false
+reportPossiblyUnboundVariable = false
+reportMissingParameterType = false
+reportUnusedVariable = false
+reportCallIssue = false
+reportAssignmentType = false
+reportRedeclaration = false
+reportGeneralTypeIssues = false
+
+# The Rust tree's pytest driver and its two lint tests kept the same relaxed
+# profile when they moved under rust/; without this block they would silently
+# fall back to strict and leave the checked set.
+[[tool.pyright.executionEnvironments]]
+root = "rust/tests"
 reportUnusedClass = false
 reportUnknownVariableType = false
 reportUnknownMemberType = false

@@ -46,6 +46,59 @@ def get_git_tracked_files(root_dir: Path) -> list[Path]:
         sys.exit(1)
 
 
+# A file may declare that it carries non-English characters ON PURPOSE, by
+# putting this marker in a comment near the top, followed by a reason:
+#
+#   // check-english-only: allow -- the model's own special-token spellings
+#
+# The reason is REQUIRED. A bare opt-out is how a lint stops meaning anything:
+# the next person adds the marker to silence a failure and nobody ever learns
+# what was allowed or why. The reason is printed on every run, so an allowance
+# stays visible rather than becoming invisible once it is written.
+#
+# This exists because a legitimate case turned up immediately. A tokenizer has
+# to spell its model's special tokens EXACTLY, and those spellings use
+# fullwidth and angle-bracket punctuation -- U+FF5C in the sentence and role
+# markers, U+3008/U+3009 around the end-of-sequence one -- while its byte-level
+# tests feed real multibyte input to check UTF-8 handling. Those are
+# identifiers and test data, not prose, and rewriting them would change which
+# token ids the tokenizer resolves.
+#
+# The codepoints are named rather than reproduced, deliberately: this file is
+# itself scanned, and a comment quoting a flagged character is the one thing
+# that keeps the pattern alive. Excluding the whole tokenizer instead would
+# have hidden any real prose problem inside it; this does not.
+ALLOW_MARKER = "check-english-only: allow"
+
+
+def allowance(text: str) -> str | None:
+    """The declared reason this file may carry non-English characters."""
+    for line in text.split("\n")[:40]:
+        if ALLOW_MARKER in line:
+            reason = line.split(ALLOW_MARKER, 1)[1].lstrip(" -:\t")
+            return reason.strip() or ""
+    return None
+
+
+def classify_allowance(file_path, root_path) -> str:
+    """`allowed`, `no-reason`, or `none` for a file carrying non-English text.
+
+    Extracted from `main` because inlining it pushed that function past the
+    branch limit -- and a three-way decision about whether a violation was
+    DECLARED reads better with a name than as nested ifs inside a loop body.
+    """
+    try:
+        reason = allowance(file_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return "none"
+    if reason is None:
+        return "none"
+    if not reason:
+        print(f"\u2717 {file_path.relative_to(root_path)}:1 declares `{ALLOW_MARKER}` without a reason")
+        return "no-reason"
+    return "allowed"
+
+
 def contains_non_english(text: str) -> tuple[bool, list[tuple[int, str]]]:
     """
     Check if text contains non-English characters.
@@ -102,6 +155,45 @@ def check_file_english_only(file_path: Path) -> tuple[bool, list[tuple[int, str]
     return not has_non_english, violations
 
 
+def scan(files_to_check, root_path, verbose):
+    """Classify every file: passed, failed, or allowed-with-a-reason.
+
+    Extracted from `main` because the allowance handling pushed that function
+    from fifteen branches to twenty. Splitting the DECISION out of the
+    argument parsing is the right cut anyway: `main` now reads as "work out
+    what to scan, scan it, report", and this is the middle verb.
+    """
+    failed_files = []
+    passed_files = []
+    allowed = []
+    for file_path in files_to_check:
+        is_english_only, violations = check_file_english_only(file_path)
+
+        if not is_english_only:
+            verdict = classify_allowance(file_path, root_path)
+            if verdict == "allowed":
+                reason = allowance(file_path.read_text(encoding="utf-8"))
+                allowed.append((file_path, reason, len(violations)))
+                is_english_only = True
+            elif verdict == "no-reason":
+                failed_files.append((file_path, [(1, f"`{ALLOW_MARKER}` with no reason given")]))
+                continue
+
+        if is_english_only:
+            passed_files.append(file_path)
+            if verbose:
+                print(f"✓ {file_path.relative_to(root_path)}")
+        else:
+            failed_files.append((file_path, violations))
+            # Show first 5 violations in IDE-friendly format: file:line message
+            for line_num, non_english_text in violations[:5]:
+                print(f"✗ {file_path.relative_to(root_path)}:{line_num} {non_english_text}")
+            if len(violations) > 5:
+                print(f"  ... and {len(violations) - 5} more line(s) in {file_path.relative_to(root_path)}")
+
+    return passed_files, failed_files, allowed
+
+
 def main() -> int:
     """Main function."""
     parser = argparse.ArgumentParser(
@@ -149,7 +241,26 @@ def main() -> int:
             filtered_files.append(f)
 
     # Filter to only source and documentation files
-    source_extensions = {".py", ".pyi", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx", ".md"}
+    #
+    # `.rs` was absent until the tree gained Rust, and the omission was silent in
+    # the worst way: the check reported "1830 passed" over a repository holding
+    # 175 tracked `.rs` files, none of which it had opened. A green lint whose
+    # scope excludes the language you just added says nothing about it. (The
+    # header lint had the same gap and was given an RS_HEADER for the same
+    # reason.)
+    source_extensions = {
+        ".py",
+        ".pyi",
+        ".cpp",
+        ".cc",
+        ".cxx",
+        ".c",
+        ".h",
+        ".hpp",
+        ".hxx",
+        ".md",
+        ".rs",
+    }
     files_to_check = [f for f in filtered_files if f.suffix in source_extensions]
 
     if not files_to_check:
@@ -160,25 +271,11 @@ def main() -> int:
     if excluded_patterns:
         print(f"Excluded patterns: {', '.join(excluded_patterns)}")
 
-    failed_files = []
-    passed_files = []
-
-    for file_path in files_to_check:
-        is_english_only, violations = check_file_english_only(file_path)
-
-        if is_english_only:
-            passed_files.append(file_path)
-            if args.verbose:
-                print(f"✓ {file_path.relative_to(root_path)}")
-        else:
-            failed_files.append((file_path, violations))
-            # Show first 5 violations in IDE-friendly format: file:line message
-            for line_num, non_english_text in violations[:5]:
-                print(f"✗ {file_path.relative_to(root_path)}:{line_num} {non_english_text}")
-            if len(violations) > 5:
-                print(f"  ... and {len(violations) - 5} more line(s) in {file_path.relative_to(root_path)}")
-
+    passed_files, failed_files, allowed = scan(files_to_check, root_path, args.verbose)
     print()
+    # Printed every run, so an allowance cannot become invisible.
+    for file_path, reason, n in allowed:
+        print(f"allowed {n} non-English match(es) in {file_path.relative_to(root_path)}: {reason}")
     print(f"Results: {len(passed_files)} passed, {len(failed_files)} failed")
 
     if failed_files:

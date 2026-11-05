@@ -334,6 +334,55 @@ jobs:
       with:
         extra_args: --all-files
 
+  rust:
+    # The Rust frontend. A free GitHub-hosted runner, gating no scarce device
+    # capacity -- the same reasoning as pre-commit above.
+    #
+    # STABLE, not nightly. Measured on rustc 1.98.1: the PTO emitter, the
+    # PTO-to-tile-rs lift and both CLIs build and pass on stable, and the
+    # stable-built emitter produces byte-identical PTO to the nightly-built one
+    # over the whole kernel bench. The two things that do need nightly --
+    # `tile_std`, a `#![no_core]` crate, and Miri -- are excluded from this
+    # workspace and get their own job when they land, so this one does not pay
+    # for a toolchain it never uses.
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Install the pinned toolchain
+      # Honours rust/rust-toolchain.toml rather than naming a channel here, so
+      # the pin has one home. --profile minimal: the pin asks for rustfmt and
+      # clippy and nothing else.
+      working-directory: rust
+      run: rustup show active-toolchain || rustup toolchain install --profile minimal
+    - name: Build
+      working-directory: rust
+      # Explicit job count: a bare --jobs saturates a shared machine. GitHub
+      # runners are not shared, but the command must read the same on both so
+      # nobody copies an unbounded form onto a host where it matters.
+      run: cargo build --release --locked --jobs 2
+    - name: Test
+      working-directory: rust
+      # `-- --nocapture` is not noise, it is the point. Several gates in this
+      # workspace need tools a GitHub-hosted runner does not have -- the pinned
+      # nightly for the kernel-side DSL, Miri, the `ptoas` assembler -- and they
+      # SKIP rather than fail, printing what they did not run. cargo captures a
+      # passing test's stderr, so without this the job reports green while
+      # eight gates execute nothing, and anyone reading the log would believe
+      # the lift's central claims had been checked. Measured: eight skips on a
+      # runner with none of the three.
+      run: cargo test --release --locked --jobs 2 -- --nocapture
+    # The serving utility is a separate workspace with its own dependencies, so
+    # it is built separately -- that separation is the point, and a single
+    # `cargo test` over both would quietly undo it.
+    - name: Build ds4-rs-ascend
+      working-directory: rust/ds4-rs-ascend
+      run: cargo build --release --jobs 2
+    - name: Test ds4-rs-ascend
+      working-directory: rust/ds4-rs-ascend
+      run: cargo test --release --jobs 2 -- --nocapture
+
   clang-tidy:
     # Build inputs come from build-constraints.txt rather than from whatever
     # PyPI offers today; pip applies a constraints file to build-dependency

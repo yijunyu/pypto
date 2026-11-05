@@ -1,0 +1,300 @@
+{
+ "corpus": "deepseek_v41",
+ "what": "Operator-level kernels at DeepSeek V4.1 Flash's real shapes. Unlike the playground corpus these are not teaching sizes, and they stress the part's bounds hard enough that most of them are refused as written -- which is the useful part.",
+ "shapes": {
+  "source": "The deepseek41 GGUF's own configuration. Every value below is read from it rather than chosen; a shape set with no cited source does not belong in this bench (see bench/shapes/registry.json).",
+  "D": 5120,
+  "MOE_INTER": 2304,
+  "N_EXP": 384,
+  "TOPK": 6,
+  "HEAD_DIM": 512,
+  "ROPE": 64,
+  "VOCAB": 129280,
+  "T": 8,
+  "EROWS": 1,
+  "EPS": 1e-20,
+  "Q_LORA": 1280
+ },
+ "representations": {
+  "tile": "tile-dialect MLIR, generated from the shape table above.",
+  "pto": "PTO assembly from the in-tree rspto. Reproducible; a test asserts it byte for byte.",
+  "ascendc": "AscendC C++ from the in-tree pto-to-ascendc, for --soc 910b. Covers strictly LESS than the PTO column here, which is a measured fact about the two emitters rather than a gap in the corpus.",
+  "tile-rs": "Lifted from the PTO by ptoas-rs. Sparsest column: the lift models fewer ops than either emitter. COMPILED, and checked both ways -- every file builds against the kernel-side DSL, and the lift is checked to still accept the .pto each one came from, so a file cannot outlive the generator that produced it.",
+  "searched": "For a kernel the PTO emitter refuses, the tiling tile-search chose instead. Present only where a search succeeded."
+ },
+ "a_refusal_is_a_result": "Six distinct bounds are hit across this corpus -- a row-major tile bound, the unified-buffer budget, a blocked-matmul N multiple, an operand-load form, an mxfp4 pair-count multiple, and a fractal stride. Each is recorded per representation, because the two emitters check different things and disagree about several of these kernels. Of the kernels the PTO emitter refuses, tile-search finds an accepted tiling for most; the ones it cannot are the ones whose bound is not a tile extent at all, and that distinction is the single most useful thing this corpus says.",
+ "totals": {
+  "kernels": 17,
+  "tile": 17,
+  "pto": 8,
+  "ascendc": 5,
+  "tile_rs": 4,
+  "pto_refused": 9,
+  "rescued_by_search": 5,
+  "search_found_nothing": 2,
+  "ascendc_refused": 12,
+  "tile_rs_refused": 11,
+  "reshaped": 1
+ },
+ "kernels": {
+  "argmax_v41_8x129280": {
+   "tile": "tile/argmax_v41_8x129280.tile",
+   "pto": null,
+   "pto_refused": "NPU tile bound (arch a2a3): row_major data tile cols=2020 * 4B = 8080B spans multiple 512B fractals with bad stride (C2); pad cols so cols*sizeof(dtype) % 512 == 0",
+   "ascendc": null,
+   "ascendc_refused": "mlir_to_cpp: __tile_argmax_f32 over 8 rows -- the scan carries a single running index, so only one row is expressible; emit one call per row.",
+   "tile-rs": null,
+   "tile_rs_refused": "no PTO to lift",
+   "searched": {
+    "tile": "searched/argmax_v41_8x129280.tile",
+    "chose": "%cl = 1280",
+    "accepted_candidates": 4,
+    "sha256_16": "22c05a48ced373e9"
+   }
+  },
+  "argmax_v41_8x131072_pad": {
+   "tile": "tile/argmax_v41_8x131072_pad.tile",
+   "pto": null,
+   "pto_refused": "NPU UB budget (arch a2a3): tile of 65536B at offset 131584B would use 197120B > UB_SIZE 194560B (C1); the live tile working set exceeds the Unified Buffer — reduce tile shapes or free earlier",
+   "ascendc": null,
+   "ascendc_refused": "mlir_to_cpp: __tile_argmax_f32 over 8 rows -- the scan carries a single running index, so only one row is expressible; emit one call per row.",
+   "tile-rs": null,
+   "tile_rs_refused": "no PTO to lift",
+   "searched": {
+    "tile": "searched/argmax_v41_8x131072_pad.tile",
+    "chose": "%cl = 2048",
+    "accepted_candidates": 5,
+    "sha256_16": "c3ee708030b67e17"
+   }
+  },
+  "gemm_f16_lmhead_v41_16x5120x12928": {
+   "tile": "tile/gemm_f16_lmhead_v41_16x5120x12928.tile",
+   "pto": "pto/gemm_f16_lmhead_v41_16x5120x12928.pto",
+   "pto_sha256_16": "5ccb43413d8ec97c",
+   "ascendc": null,
+   "ascendc_refused": "UB overflow in kernel 'bm_gemm_f16_16_5120_12928': buffer 0 needs 81920 elements (163840 bytes) but only 62784 bytes available per buffer (188416 UB / 3 slots). Reduce the number of buffers or the element count.",
+   "tile-rs": null,
+   "tile_rs_refused": "refused bench/deepseek_v41/pto/gemm_f16_lmhead_v41_16x5120x12928.pto: `bm_gemm_f16_16_5120_12928_aic` and `bm_gemm_f16_16_5120_12928_aiv` are the cube and vector halves of ONE kernel, linked by a          cross-core FIFO"
+  },
+  "gemm_f16_lmhead_v41_16x5120x16160": {
+   "tile": "tile/gemm_f16_lmhead_v41_16x5120x16160.tile",
+   "pto": null,
+   "pto_refused": "blocked matmul: N=16160 must be a multiple of Nb=64",
+   "ascendc": null,
+   "ascendc_refused": "UB overflow in kernel 'bm_gemm_f16_16_5120_16160': buffer 0 needs 81920 elements (163840 bytes) but only 62784 bytes available per buffer (188416 UB / 3 slots). Reduce the number of buffers or the element count.",
+   "tile-rs": null,
+   "tile_rs_refused": "no PTO to lift",
+   "searched": null,
+   "search_found_nothing": "every candidate tiling was refused too. The bound is not a tile extent: see pto_refused above, which names a structural constraint (an N multiple, or an operand-load form) that a tiling search cannot move."
+  },
+  "gemm_i8_v41_16x5120x2304": {
+   "tile": "tile/gemm_i8_v41_16x5120x2304.tile",
+   "pto": "pto/gemm_i8_v41_16x5120x2304.pto",
+   "pto_sha256_16": "498bce476eac6241",
+   "ascendc": null,
+   "ascendc_refused": "mlir_to_cpp has no arm for `__tile_matmul_i8_acc_i32_dequant_f16`; implemented: __tile_matmul_f32, __tile_matmul_transposed_f32, __tile_matmul_cube, __tile_matmul_f16, __tile_matmul_transposed_f16. Emitting it would sile",
+   "tile-rs": null,
+   "tile_rs_refused": "refused bench/deepseek_v41/pto/gemm_i8_v41_16x5120x2304.pto: `bm_gemm_i8_16_5120_2304_aic` and `bm_gemm_i8_16_5120_2304_aiv` are the cube and vector halves of ONE kernel, linked by a          cross-core FIFO, and the til"
+  },
+  "gemm_i8_v41_1x5120x2304": {
+   "tile": "tile/gemm_i8_v41_1x5120x2304.tile",
+   "pto": null,
+   "pto_refused": "matmul_i8: both operand loads must be deferred for blocked emit (a.deferred=false, b.deferred=false); detect_blocked_matmul_loads must mark i8 matmul inputs",
+   "ascendc": null,
+   "ascendc_refused": "mlir_to_cpp has no arm for `__tile_matmul_i8_acc_i32_dequant_f16`; implemented: __tile_matmul_f32, __tile_matmul_transposed_f32, __tile_matmul_cube, __tile_matmul_f16, __tile_matmul_transposed_f16. Emitting it would sile",
+   "tile-rs": null,
+   "tile_rs_refused": "no PTO to lift",
+   "searched": null,
+   "search_found_nothing": "every candidate tiling was refused too. The bound is not a tile extent: see pto_refused above, which names a structural constraint (an N multiple, or an operand-load form) that a tiling search cannot move.",
+   "reshaped": {
+    "tile": "tile/fixed/gemm_i8_v41_1x5120x2304.tile",
+    "pto": null,
+    "pto_refused": "blocked matmul: M=1 must be a multiple of 16 (910B2 cube fixedRowSize). Pad the M dim.",
+    "why": "the capture passes 6 operands where the i8 dequant matmul declares 7, dropping `scale: *const f32`. At 6 the blocked-matmul pre-pass cannot read the shape, so the emitter blamed one of our own passes (`detect_blocked_matmul_loads must mark i8 matmul inputs`). With the call corrected the true constraint appears and it is the part's: on the 910B2 cube M must be a multiple of 16, so this decode shape needs the padded M=16 form the corpus already carries."
+   }
+  },
+  "mx4pk_v41_5120x2304": {
+   "tile": "tile/mx4pk_v41_5120x2304.tile",
+   "pto": null,
+   "pto_refused": "mul_mv_id_mxfp4_pk: pair count (80) must be a multiple of the 64 chunk",
+   "ascendc": null,
+   "ascendc_refused": "mlir_to_cpp has no arm for `__tile_mul_mv_id_mxfp4_pk_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "tile-rs": null,
+   "tile_rs_refused": "no PTO to lift",
+   "searched": {
+    "tile": "searched/mx4pk_v41_5120x2304.tile",
+    "chose": "%ne00 = 2560",
+    "accepted_candidates": 5,
+    "sha256_16": "744e37ed287f2b38"
+   }
+  },
+  "quant_i8_v41_8x5120": {
+   "tile": "tile/quant_i8_v41_8x5120.tile",
+   "pto": null,
+   "pto_refused": "NPU UB budget (arch a2a3): tile of 163840B at offset 164352B would use 328192B > UB_SIZE 194560B (C1); the live tile working set exceeds the Unified Buffer — reduce tile shapes or free earlier",
+   "ascendc": null,
+   "ascendc_refused": "mlir_to_cpp has no arm for `__tile_quantize_f32_i8`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "tile-rs": null,
+   "tile_rs_refused": "no PTO to lift",
+   "searched": {
+    "tile": "searched/quant_i8_v41_8x5120.tile",
+    "chose": "%cl = 1280",
+    "accepted_candidates": 5,
+    "sha256_16": "4c3d2dbf7b1698aa"
+   }
+  },
+  "rmsnorm_v41_1x5120_decode": {
+   "tile": "tile/rmsnorm_v41_1x5120_decode.tile",
+   "pto": "pto/rmsnorm_v41_1x5120_decode.pto",
+   "pto_sha256_16": "1c19b0e64396f67a",
+   "ascendc": "ascendc/rmsnorm_v41_1x5120_decode.cpp",
+   "ascendc_sha256_16": "3a28aa37adad01cc",
+   "tile-rs": "tile-rs/rmsnorm_v41_1x5120_decode.rs",
+   "tile_rs_sha256_16": "f3df14a83a9e09b3"
+  },
+  "rmsnorm_v41_8x1280_quarter": {
+   "tile": "tile/rmsnorm_v41_8x1280_quarter.tile",
+   "pto": "pto/rmsnorm_v41_8x1280_quarter.pto",
+   "pto_sha256_16": "1644137e92d2a242",
+   "ascendc": "ascendc/rmsnorm_v41_8x1280_quarter.cpp",
+   "ascendc_sha256_16": "db952a4a3dbb0e34",
+   "tile-rs": "tile-rs/rmsnorm_v41_8x1280_quarter.rs",
+   "tile_rs_sha256_16": "6fbbc42e4a99eef6"
+  },
+  "rmsnorm_v41_8x5120": {
+   "tile": "tile/rmsnorm_v41_8x5120.tile",
+   "pto": null,
+   "pto_refused": "NPU UB budget (arch a2a3): tile of 163840B at offset 163840B would use 327680B > UB_SIZE 194560B (C1); the live tile working set exceeds the Unified Buffer — reduce tile shapes or free earlier",
+   "ascendc": null,
+   "ascendc_refused": "UB overflow in kernel 'bm_rmsnorm_8_5120': buffer 0 needs 40960 elements (163840 bytes) but only 37664 bytes available per buffer (188416 UB / 5 slots). Reduce the number of buffers or the element count.",
+   "tile-rs": null,
+   "tile_rs_refused": "no PTO to lift",
+   "searched": {
+    "tile": "searched/rmsnorm_v41_8x5120.tile",
+    "chose": "%cl = 1280",
+    "accepted_candidates": 5,
+    "sha256_16": "3b456b0ce325e9bb"
+   }
+  },
+  "rope_v41_8x64": {
+   "tile": "tile/rope_v41_8x64.tile",
+   "pto": "pto/rope_v41_8x64.pto",
+   "pto_sha256_16": "fae8fe060951ed09",
+   "ascendc": "ascendc/rope_v41_8x64.cpp",
+   "ascendc_sha256_16": "96e20f1535967739",
+   "tile-rs": "tile-rs/rope_v41_8x64.rs",
+   "tile_rs_sha256_16": "372fd2018eb6a72d"
+  },
+  "swiglu_v41_1x2304": {
+   "tile": "tile/swiglu_v41_1x2304.tile",
+   "pto": "pto/swiglu_v41_1x2304.pto",
+   "pto_sha256_16": "0c9e706764dd6187",
+   "ascendc": "ascendc/swiglu_v41_1x2304.cpp",
+   "ascendc_sha256_16": "889c18072bbd08d9",
+   "tile-rs": null,
+   "tile_rs_refused": "refused bench/deepseek_v41/pto/swiglu_v41_1x2304.pto: `pto.tmuls` at dtype `f32` is liftable as `tile_scale_f32` but is not wired: the scalar operand's literal is not threaded into this emitter"
+  },
+  "topk_v41_1x384_k6": {
+   "tile": "tile/topk_v41_1x384_k6.tile",
+   "pto": "pto/topk_v41_1x384_k6.pto",
+   "pto_sha256_16": "3985bad8c9ffbd43",
+   "ascendc": null,
+   "ascendc_refused": "mlir_to_cpp has no arm for `__tile_topk_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "tile-rs": null,
+   "tile_rs_refused": "refused bench/deepseek_v41/pto/topk_v41_1x384_k6.pto: tile_buf missing/unknown dtype"
+  },
+  "residual_add_v41_1x5120": {
+   "tile": "tile/residual_add_v41_1x5120.tile",
+   "pto": "pto/residual_add_v41_1x5120.pto",
+   "pto_sha256_16": "e7431cf7b139126a",
+   "ascendc": "ascendc/residual_add_v41_1x5120.cpp",
+   "ascendc_sha256_16": "3303fe4d50635f0d",
+   "tile-rs": "tile-rs/residual_add_v41_1x5120.rs",
+   "tile_rs_sha256_16": "e798594c4f01e043"
+  },
+  "embedding_v41_129280x5120": {
+   "tile": "tile/embedding_v41_129280x5120.tile",
+   "pto": null,
+   "pto_refused": "mlir_to_pto has no arm for `__tile_embedding_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "ascendc": null,
+   "ascendc_refused": "UB overflow in kernel 'v41_embedding_5120': __tile_embedding_f32 gathers rows from a tile that holds 5120 element(s) while the vocabulary needs 661913600 (vocab x dim). The table cannot be resident -- it is far larger than the unified buffer -- so its rows have to be copied from global memory one at a time, and mlir_to_cpp has no GM-driven embedding path. Refusing rather than emitting a gather that reads past the tile it was given."
+  },
+  "attention_decode_v41_1x512": {
+   "tile": "tile/attention_decode_v41_1x512.tile",
+   "pto": null,
+   "pto_refused": "mlir_to_pto has no arm for `__tile_attention_decode_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step.",
+   "ascendc": null,
+   "ascendc_refused": "mlir_to_cpp has no arm for `__tile_attention_decode_f32`. Emitting it would drop the operation silently: the dispatch skips calls it does not match, so the kernel would compile, run, and quietly omit this step."
+  }
+ },
+ "estimated_decode_kernels": {
+  "count": 52,
+  "is_lower_bound": true,
+  "source": "the published kernel registry's DeepSeek V4 Flash row, read 2026-11-02: 52 distinct kernels, 13 of them traced and 39 read from sources. A floor three times over -- the view is redacted, most rows are unverified by a trace, and V4.1 is a later revision of the same architecture",
+  "what_it_is": "The number of distinct kernels one decode step of this model needs -- the denominator the representation counts are read against. Where the count is KNOWN it is used; where it is not, inventory() derives a LOWER BOUND from the model's own configuration. Not a measurement of a running engine in either case.",
+  "derivation_error": "the inventory predicted 15 for DeepSeek V4 Flash against a registry count of 52, so it under-counts by about 3.5x. Not applied as a correction: one anchor cannot calibrate a model, and a derivation multiplied by 3.5 would look measured and would not be.",
+  "a_kernel_is": "one distinct (operation, shape) pair, because that is what this corpus holds -- one rmsnorm file serves every block that shares D. A layer count does not multiply it.",
+  "derived_inventory_total": 15,
+  "inventory": [
+   {
+    "n": 1,
+    "line": "embedding / get_rows at D"
+   },
+   {
+    "n": 1,
+    "line": "rmsnorm at D (attn_norm, ffn_norm and the final norm share it)"
+   },
+   {
+    "n": 1,
+    "line": "residual add at D"
+   },
+   {
+    "n": 1,
+    "line": "lm-head matvec at VOCAB"
+   },
+   {
+    "n": 1,
+    "line": "argmax over VOCAB"
+   },
+   {
+    "n": 5,
+    "line": "MLA projections: q_a, q_b, kv_a, kv_b, output"
+   },
+   {
+    "n": 1,
+    "line": "rope"
+   },
+   {
+    "n": 1,
+    "line": "attention core (decode shape)"
+   },
+   {
+    "n": 1,
+    "line": "MoE router (scores, then top-k)"
+   },
+   {
+    "n": 2,
+    "line": "routed expert gate/up at MOE_INTER, and down at D"
+   }
+  ],
+  "inventory_is_not_used_here": "the inventory derives 15 and the known count is 52. The known count wins; the inventory is kept because the gap between them is the measurement of how coarse it is.",
+  "uncounted_because_unrecorded": [
+   "N_SHARED_EXP is not in the registry, so `shared expert gate/up and down` is uncounted",
+   "LEADING_DENSE_BLOCKS is not in the registry, so `the leading dense blocks' gate/up at DENSE_FFN_INTER, and down at D` is uncounted"
+  ],
+  "what_the_inventory_collapses": {
+   "each expert's gate, up and down are one row": "a real engine has three kernels there, and the gate/up pair is often fused separately from the down-projection",
+   "one attention core": "decode, prefill and partial/chunked are different kernels with different shapes, and a model with two attention types doubles that again",
+   "one matvec per projection": "f16 and f32 weight forms are separate kernels, and each quantisation the engine supports adds another (q8_0, q4_K, iq2_xxs, mxfp4 ...)",
+   "no prefill shapes": "every projection and norm has a batched prefill form, which is a different kernel from its decode form",
+   "no quantise/dequantise kernels": "activation quantisation and weight unpacking are real kernels; the inventory treats weight format as out of scope",
+   "one sampling kernel": "argmax is counted; top-p, top-k sampling and draft verification are not"
+  },
+  "why_collapses_are_listed_not_multiplied": "'under-counts by 3.5x' is one number and tells a reader nothing they can act on. These name the specific rows that each stand for several real kernels. They are not multiplied out: that would turn a list of known omissions into a fabricated total. Someone who knows the true count for this model can see which rows to expand.",
+  "published_registry": "the published kernel registry, read 2026-11-02 and generated 2026-08-31, holds 52 distinct kernels for DeepSeek V4 Flash: 13 under a `trace` basis and 39 under `source-scan`. This supersedes an earlier floor of 51; 52 is the larger of the two floors. It stays a floor for three independent reasons -- the published view is marked redacted, so it is a subset; most rows are unverified by a trace, and the registry's own wording is that only a trace is evidence a kernel holds measurable time; and V4.1 is a later revision of the same architecture, so its count can only grow.",
+  "published_registry_count": 52
+ },
+ "stored_pto_that_does_not_assemble": {
+  "pto/topk_v41_1x384_k6.pto": "the stored .pto does NOT assemble: `pto.tci` emits `{descending = ...}` inside the `ins(...)` operand list, where MLIR's parser wants `:`, so ptoas reports `expected ':'`. The attribute belongs on the op. The artefact is kept because it is the reproduction; the byte-identity gate cannot see this, since it compares the emitter's output to the file the emitter wrote and both hold the same invalid text."
+ }
+}

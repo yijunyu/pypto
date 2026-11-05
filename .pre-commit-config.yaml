@@ -19,9 +19,28 @@ repos:
           language_version: python3
           pass_filenames: false
 
+        - id: check-no-foreign-targets
+          name: check-no-foreign-targets
+          entry: python rust/tests/lint/check_no_foreign_targets.py
+          language: python
+          language_version: python3
+          pass_filenames: false
+
+        # The corpus `.tile` captures are hand-written MLIR, and nothing was
+        # comparing their calls to the intrinsics tile_std declares. Three did
+        # not match; one of the three had CORRECT arity and every operand
+        # shifted by one, which is why this reads the declaration rather than
+        # counting commas.
+        - id: check-call-conformance
+          name: check-call-conformance
+          entry: python rust/bench/shapes/check_call_conformance.py
+          language: python
+          language_version: python3
+          pass_filenames: false
+
         - id: check-english-only
           name: check-english-only
-          entry: python tests/lint/check_english_only.py
+          entry: python rust/lint/check_english_only.py
           language: python
           language_version: python3
           pass_filenames: false
@@ -120,13 +139,32 @@ repos:
       hooks:
         - id: clang-format
           types_or: [c++, c]
-          exclude: ^3rdparty/
+          # GENERATED artifacts are excluded alongside `3rdparty/`, and for the
+          # same reason: neither is this projects to format.
+          #
+          # `rust/bench/*/ascendc/` is AscendC emitted by `pto-to-ascendc`, and
+          # `tests/fixtures/*.cpp` is output captured from `ptoas`. Three things
+          # cannot all hold at once: the emitter produces a specific text, a
+          # byte-identity test asserts the committed file equals freshly-emitted
+          # output, and clang-format wants to reformat it. Measured: letting it
+          # run rewrote all 29 bench files and one fixture, and the identity gate
+          # failed immediately.
+          #
+          # Bending the emitter to a HOST C++ style guide would be the wrong
+          # resolution -- its output format is settled by what bisheng accepts
+          # and by the gate that pins it, not by this repositorys braces.
+          exclude: ^(3rdparty/|rust/bench/[^/]+/ascendc/|rust/crates/ptoas_rs/tests/fixtures/.*\.cpp$)
 
     - repo: https://github.com/cpplint/cpplint
       rev:  2.0.0
       hooks:
         - id: cpplint
-          exclude: ^3rdparty/
+          # Same scope as clang-format above, same reason. cpplints findings on
+          # the generated corpus are properties of the EMITTER -- C-style casts
+          # and an unqualified `#include` -- and are answered by changing the
+          # emitter if they are worth answering at all, not by editing an
+          # artifact a test regenerates.
+          exclude: ^(3rdparty/|rust/bench/[^/]+/ascendc/|rust/crates/ptoas_rs/tests/fixtures/.*\.cpp$)
           args:
             - --root=include
             - --linelength=110

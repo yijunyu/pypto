@@ -1,3 +1,8 @@
+# `<details>`/`<summary>` are the only inline HTML the tree uses: they make
+# rust/README.md's long sections collapsible on GitHub, which is why they are
+# allowed by name rather than by turning the rule off.
+MD033:
+  allowed_elements: [details, summary]
 MD013: false
 MD024:
   siblings_only: true
