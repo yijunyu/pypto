@@ -8072,7 +8072,12 @@ fn generate_vector_compute_code(
   int __n = ({n}); int __k = ({k});
   for (int __i = 0; __i < __n; ++__i) {{
     AscendC::DataCopy(buf{w8}, gm{wi}Tensor[__i * __k], __k);
-    AscendC::PipeBarrier<PIPE_ALL>();
+    // PRECISE EVENTS, NOT PIPE_ALL. A full drain after every DMA and every reduction is
+    // 2 x n drains for an n-row matvec, and at n=1024 that did not finish in 25 minutes
+    // (100% CPU spinning in the stream sync). These are the two dependencies that
+    // actually exist: MTE2->V after the copy in, and V->S before the scalar readback.
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
     AscendC::Cast(buf{hf}, buf{w8}, AscendC::RoundMode::CAST_NONE, __k);
     AscendC::PipeBarrier<PIPE_V>();
     AscendC::Cast(buf{wf}, buf{hf}, AscendC::RoundMode::CAST_NONE, __k);
@@ -8086,7 +8091,8 @@ fn generate_vector_compute_code(
     AscendC::Mul(buf{pr}, buf{x}, buf{wf}, __k);
     AscendC::PipeBarrier<PIPE_V>();
     AscendC::ReduceSum(buf{c}, buf{pr}, buf{r}, __k);
-    AscendC::PipeBarrier<PIPE_ALL>();
+    AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
     buf{o}.SetValue(__i, buf{c}.GetValue(0));
   }}
 }}"#,
