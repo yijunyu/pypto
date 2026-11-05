@@ -227,7 +227,63 @@ fn run_share(id: &str, yes: bool) -> Result<()> {
 }
 
 
+/// Report a W8A8 deployment package through the engine's own reader.
+///
+/// This is the engine READING the package: layers, dimensions, per-role dtypes and the byte
+/// count, all derived from the tensors rather than a config file that may disagree with them.
+/// Serving it needs the builder (package -> the structures `decode_step` consumes), which is
+/// not written yet, so this reports and refuses rather than pretending to generate.
+fn report_w8a8_package(dir: &std::path::Path) -> Result<()> {
+    use engine_core::safetensors::Package;
+    let pkg = Package::open(dir)?;
+    println!("model: {}  (W8A8 deployment package)", dir.display());
+    println!("tensors in index: {}", pkg.n_tensors());
+
+    let mut layers = std::collections::BTreeSet::new();
+    for name in pkg.names() {
+        if let Some(rest) = name.strip_prefix("layers.") {
+            if let Some((idx, _)) = rest.split_once('.') {
+                if let Ok(n) = idx.parse::<usize>() {
+                    layers.insert(n);
+                }
+            }
+        }
+    }
+    let emb = pkg.tensor("embed.weight")?.shape;
+    let wq_a = pkg.tensor("layers.0.attn.wq_a.weight")?.shape;
+    let wq_b = pkg.tensor("layers.0.attn.wq_b.weight")?.shape;
+    let wkv = pkg.tensor("layers.0.attn.wkv.weight")?.shape;
+    let w1 = pkg.tensor("layers.0.ffn.experts.0.w1.weight")?.shape;
+    let n_experts = pkg
+        .names()
+        .iter()
+        .filter(|s| s.starts_with("layers.0.ffn.experts.") && s.ends_with(".w1.weight"))
+        .count();
+    println!(
+        "  layers {}  vocab {}  d_model {}  q_lora {}  kv_lora {}  q_dim {}  expert_ffn {}  experts {}",
+        layers.len(), emb[0], emb[1], wq_a[0], wkv[0], wq_b[0], w1[0], n_experts
+    );
+    println!(
+        "  quantisation: W8A8 (int8 weights, per-output-channel scale/offset); \
+         wo_a/wo_b/gate/embed are BF16, head is F32"
+    );
+    anyhow::bail!(
+        "the package is READABLE but not yet SERVEABLE: the builder that maps its tensors onto \
+         the structures `decode_step` consumes is not written. `kernels verify` and the projection \
+         kernels are certified; what is missing is the wiring, not the arithmetic."
+    );
+}
+
 fn run_deploy(opts: cli::DeployOpts) -> Result<()> {
+    // 0. A W8A8 package directory is a different container from GGUF; recognise it before the
+    //    GGUF locator, which would otherwise search for a .gguf that is not there.
+    if let Some(d) = opts.model_dir.as_deref() {
+        let p = std::path::Path::new(d);
+        if p.join("quant_model_description.json").is_file() {
+            return report_w8a8_package(p);
+        }
+    }
+
     // 1. Locate or fetch the weights.
     let spec = model::known(&opts.model)?;
     let weights =
