@@ -28,7 +28,8 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("usage: w8a8_layer <package dir> [layer]");
     }
     let dir = PathBuf::from(&a[1]);
-    let layer = a.get(2).map(|s| s.clone()).unwrap_or_else(|| "0".to_string());
+    let layer = a.get(2).cloned().unwrap_or_else(|| "0".to_string());
+    let layer_idx: usize = layer.parse().unwrap_or(0);
     let pkg = Package::open(&dir)?;
     println!("package: {}", dir.display());
     println!("layer:   {layer}\n");
@@ -74,6 +75,31 @@ fn main() -> anyhow::Result<()> {
         );
         if *role == "wq_a" {
             wq_a = Some((v, t.shape.clone()));
+        }
+    }
+
+    // The same layer through the SOURCE the converted decoder loop will call: roles resolve to
+    // owned f32 (I8 dequantised, BF16 widened), and the raw bytes stay available for the planes
+    // the engine keeps quantised on the host.
+    {
+        use engine_core::w8a8_roles::PackageSource;
+        let src = PackageSource::new(&pkg);
+        println!("\nvia PackageSource:");
+        for role in ["attn_norm", "attn_q_a", "attn_q_b", "attn_kv", "attn_output_a",
+                     "ffn_gate_inp", "ffn_shared_w1"] {
+            let role = if role == "ffn_shared_w1" { "ffn_gate_shexp" } else { role };
+            match src.dequant(layer_idx, role) {
+                Ok(v) => println!("  {role:<16} {} floats  rms {:.4e}", v.len(), rms(&v)),
+                Err(e) => println!("  {role:<16} ERROR {e}"),
+            }
+        }
+        match src.dequant_expert(layer_idx, 0, 1) {
+            Ok(v) => println!("  expert w1        {} floats  rms {:.4e}", v.len(), rms(&v)),
+            Err(e) => println!("  expert w1        ERROR {e}"),
+        }
+        match src.raw(layer_idx, "attn_q_a") {
+            Ok(b) => println!("  raw attn_q_a     {} bytes (int8, dequantised on device)", b.len()),
+            Err(e) => println!("  raw attn_q_a     ERROR {e}"),
         }
     }
 

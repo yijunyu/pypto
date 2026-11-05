@@ -10,7 +10,7 @@
 //! document: every role below was checked to exist in the 0731 package.
 
 use crate::safetensors::{Dtype, Package, TensorRef};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 
 /// A role the decoder needs, with the package name it corresponds to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +84,69 @@ pub fn describe(t: &TensorRef) -> &'static str {
         Dtype::F32 => "f32: read directly",
         Dtype::F16 => "f16: converted to f32",
         _ => "unsupported dtype",
+    }
+}
+
+
+/// A package as a SOURCE of weight data, addressed by the decoder's roles.
+///
+/// This is the shape the converted `from_views_impl` will call: `dequant(layer, role)` returns
+/// owned f32 (I8 dequantised per output channel, BF16 widened, F32 read), and `raw(layer, role)`
+/// returns the tensor's bytes for the planes the engine keeps quantised on the host.
+///
+/// Both return OWNED data deliberately. `LayerViews::bytes_for` lends a slice into its single
+/// mmap; a package spans 74 files, so lending is not available and pretending otherwise would
+/// force a lifetime through a hot loop for no benefit.
+pub struct PackageSource<'a> {
+    pkg: &'a Package,
+}
+
+impl<'a> PackageSource<'a> {
+    pub fn new(pkg: &'a Package) -> Self {
+        Self { pkg }
+    }
+
+    fn name_for(&self, layer: usize, role: &str) -> Result<String> {
+        layer_roles(layer)
+            .into_iter()
+            .find(|r| r.role == role)
+            .map(|r| r.name)
+            .ok_or_else(|| anyhow!("layer {layer}: no role named {role}"))
+    }
+
+    /// A role as f32, whatever its on-disk dtype.
+    pub fn dequant(&self, layer: usize, role: &str) -> Result<Vec<f32>> {
+        let name = self.name_for(layer, role)?;
+        let t = self.pkg.tensor(&name)?;
+        match t.dtype {
+            Dtype::I8 => self.pkg.dequant_tensor(&name),
+            _ => self.pkg.f32_tensor(&name),
+        }
+    }
+
+    /// A role's raw bytes, for a caller that will dequantise on the device.
+    pub fn raw(&self, layer: usize, role: &str) -> Result<Vec<u8>> {
+        let name = self.name_for(layer, role)?;
+        Ok(self.pkg.raw(&name)?.1)
+    }
+
+    /// One routed expert plane: `plane` is 1, 2 or 3 (`w1` gate, `w2` down, `w3` up).
+    pub fn dequant_expert(&self, layer: usize, expert: usize, plane: u8) -> Result<Vec<f32>> {
+        let role = match plane {
+            1 => "ffn_gate_exps",
+            2 => "ffn_down_exps",
+            3 => "ffn_up_exps",
+            _ => bail!("expert plane must be 1, 2 or 3"),
+        };
+        let e = expert_roles(layer, expert)
+            .into_iter()
+            .find(|r| r.role == role)
+            .ok_or_else(|| anyhow!("layer {layer}: no expert role {role}"))?;
+        let t = self.pkg.tensor(&e.name)?;
+        match t.dtype {
+            Dtype::I8 => self.pkg.dequant_tensor(&e.name),
+            _ => self.pkg.f32_tensor(&e.name),
+        }
     }
 }
 
