@@ -49,6 +49,7 @@ engine/ascendc/rmsnorm_engine_1x16384                 dav-2201 engine_rmsnorm_1_
 engine/ascendc/proj_w8a8_engine_1x1024_k4096          dav-2201 proj_w8a8_engine_1x1024_k4096_do  1200000 5 15 1e-5f 1e-6 3 1024 4096
 engine/ascendc/proj_w8a8_engine_1x512_k4096           dav-2201 proj_w8a8_engine_1x512_k4096_do   600000 5 15 1e-5f 1e-6 3 512 4096
 engine/ascendc/proj_w8a8_engine_1x32768_k1024         dav-2201 proj_w8a8_engine_1x32768_k1024_do 8400000 5 15 1e-5f 1e-6 3 32768 1024
+engine/ascendc/proj_w8a8_engine_1x4096_k8192           dav-2201 proj_w8a8_engine_1x4096_k8192_do   8400000 5 15 1e-5f 1e-6 3 4096 8192
 kimi_k3/ascendc/kda_delta_k3_1x128                   dav-2201 k3_kda_delta_128_do           128 5   4 1e-5f    1e-6
 glm_5_3/ascendc/kda_delta_glm53_1x128                dav-2201 glm53_kda_delta_128_do        128 5   4 1e-5f    1e-6
 glm_5_3/ascendc/kda_conv_glm53_1x4096_k4             dav-2201 glm53_kda_conv_4096_do       4096 9  11 1e-5f    1e-5

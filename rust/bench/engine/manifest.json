@@ -5,11 +5,11 @@
  "shapes_source": "rust/ds4-rs-ascend/crates/engine_ascend/src/device.rs LAYER0_KERNELS",
  "generator": "shapes/gen_engine.py",
  "totals": {
-  "kernels": 7,
-  "tile": 7,
+  "kernels": 8,
+  "tile": 8,
   "pto": 2,
-  "ascendc": 7,
-  "device_verified": 7
+  "ascendc": 8,
+  "device_verified": 8
  },
  "kernels": {
   "rmsnorm_engine_1x512": {
@@ -101,6 +101,20 @@
     "tolerance": 1e-06,
     "n": 32768,
     "k": 1024
+   }
+  },
+  "proj_w8a8_engine_1x4096_k8192": {
+   "tile": "tile/proj_w8a8_engine_1x4096_k8192.tile",
+   "pto": null,
+   "ascendc": "ascendc/proj_w8a8_engine_1x4096_k8192.cpp",
+   "device_check": "PASS 2026-11-05 on 910B2, 3 launches: wrong=0, backward relative error 2.293e-07 against an f64 oracle, tolerance 1e-6; 5.280340 ms. Uses the CHUNKED arm (__tile_matvec_w8a8_gm_f32): the non-chunked form needs eight k-wide buffers and was refused as a UB overflow once aliasing was correctly forbidden, and its earlier 'successful' emission only fit by overlapping them (25 of 4096 outputs +inf). Every buffer here is 4096-wide, so k=8192 chunks into two.",
+   "device_metrics": {
+    "backward_rel": 2.293e-07,
+    "time_ms": 5.28034,
+    "repeat": 3,
+    "tolerance": 1e-06,
+    "n": 4096,
+    "k": 8192
    }
   }
  }

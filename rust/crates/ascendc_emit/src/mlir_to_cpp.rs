@@ -245,6 +245,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_matvec_gm_f32",
     "__tile_matvec_q8_0_gm_f32",
     "__tile_matvec_w8a8_f32",
+    "__tile_matvec_w8a8_gm_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1544,7 +1545,14 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
             vec_buf_count += 1;
             has_binary_ops = true;
         }
+        if line.contains("@__tile_matvec_w8a8_gm_f32") {
+            // x chunk, int8 chunk, half chunk, f32 chunk, shifted chunk, product chunk,
+            // reduce work chunk, cell, out. NINE, and all of them are chunk-sized rather
+            // than k-sized -- that is what lets k exceed the buffer.
+            vec_buf_count += 9;
+        }
         if line.contains("@__tile_matvec_w8a8_f32")
+            || line.contains("@__tile_matvec_w8a8_gm_f32")
             || line.contains("@__tile_matvec_gm_f32")
             || line.contains("@__tile_matvec_q8_0_gm_f32")
         {
@@ -8047,6 +8055,126 @@ fn generate_vector_compute_code(
                                 cpp_type: "uint32_t".to_string(),
                             },
                         );
+                    }
+                }
+                continue;
+            }
+
+            // --- __tile_matvec_w8a8_gm_f32: the CHUNKED form of the w8a8 matvec ---
+            //
+            // Same arithmetic, but BOTH the activation and the weight are read from GM one
+            // K-chunk at a time and the per-row dot accumulates across chunks. The
+            // non-chunked arm needs eight k-wide buffers: fine at k=4096 (108 KB), refused
+            // at k=8192 (over UB) and hopeless at k=16384 for `hc_mv`. Here every buffer is
+            // CHUNK-wide, so k can exceed the unified buffer.
+            if line.contains("@__tile_matvec_w8a8_gm_f32") {
+                if let Some(result) = extract_result(line) {
+                    let a = extract_call_args(line);
+                    if a.len() >= 7 {
+                        let x_arg = a[0].trim().to_string();
+                        let w_arg = a[1].trim().to_string();
+                        let s_arg = a[2].trim().to_string();
+                        let o_arg = a[3].trim().to_string();
+                        let n_expr = resolve_value(&a[5], &values);
+                        let k_expr = resolve_value(&a[6], &values);
+                        let idx_of = |arg: &str| {
+                            analysis.gm_args.iter().position(|(_, name)| {
+                                name == arg || format!("%{name}") == arg
+                            })
+                        };
+                        match (idx_of(&x_arg), idx_of(&w_arg), idx_of(&s_arg), idx_of(&o_arg)) {
+                            (Some(xi), Some(wi), Some(si), Some(oi)) => {
+                                gm_elem_types.insert(wi, "int8_t".to_string());
+                                const CHUNK: usize = 4096;
+                                let ch = format!("({CHUNK})");
+                                let nb = |sz: String| format!("(({}) + 7) / 8 * 8", sz);
+                                let mut b = [0usize; 9];
+                                for (slot, elem) in b.iter_mut().zip([
+                                    None, Some("int8_t"), Some("half"), None, None, None, None,
+                                    None, None,
+                                ]) {
+                                    let i = buf_counter;
+                                    buf_counter += 1;
+                                    buf_sizes.insert(i, nb(ch.clone()));
+                                    if let Some(e) = elem {
+                                        buf_elem_types.insert(i, e.to_string());
+                                    }
+                                    *slot = i;
+                                }
+                                let [xc, w8, hf, wf, sh, pr, rw, cell, out] = b;
+                                // `out` holds n floats, not a chunk.
+                                buf_sizes.insert(out, nb(n_expr.clone()));
+                                writeln!(
+                                    code,
+                                    r#"{{ // tile_matvec_w8a8_gm: y[i] = sum_k a[k] * ((q - off[i]) * sc[i]), K CHUNKED
+  int __n = ({n}); int __k = ({k});
+  const int __chunk = {chunk};
+  AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
+  for (int __i = 0; __i < __n; ++__i) {{
+    const float __sc = ((__gm__ float *)gm{si}Tensor.GetPhyAddr())[__i];
+    const float __off = ((__gm__ float *)gm{oi}Tensor.GetPhyAddr())[__i];
+    float __acc = 0.0f;
+    for (int __k0 = 0; __k0 < __k; __k0 += __chunk) {{
+      int __kc = __k - __k0;
+      if (__kc > __chunk) __kc = __chunk;
+      AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
+      AscendC::DataCopy(buf{xc}, gm{xi}Tensor[__k0], __kc);
+      AscendC::DataCopy(buf{w8}, gm{wi}Tensor[__i * __k + __k0], __kc);
+      AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
+      AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
+      AscendC::Cast(buf{hf}, buf{w8}, AscendC::RoundMode::CAST_NONE, __kc);
+      AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::Cast(buf{wf}, buf{hf}, AscendC::RoundMode::CAST_NONE, __kc);
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::Adds(buf{sh}, buf{wf}, -__off, __kc);
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::Muls(buf{wf}, buf{sh}, __sc, __kc);
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::Mul(buf{pr}, buf{xc}, buf{wf}, __kc);
+      AscendC::PipeBarrier<PIPE_V>();
+      AscendC::ReduceSum(buf{c}, buf{pr}, buf{r}, __kc);
+      AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+      AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+      __acc += buf{c}.GetValue(0);
+      // NO second V_MTE2 set here. Two sets per chunk against one wait at the top of the
+      // next chunk unbalances the flag and the kernel hangs -- which is what the first
+      // attempt did. The single set right after the cast is the one that orders the next
+      // chunk's DataCopy against this chunk's read of the int8 buffer.
+    }}
+    buf{o}.SetValue(__i, __acc);
+  }}
+}}"#,
+                                    n = n_expr,
+                                    k = k_expr,
+                                    chunk = ch,
+                                    xi = xi,
+                                    wi = wi,
+                                    si = si,
+                                    oi = oi,
+                                    xc = xc,
+                                    w8 = w8,
+                                    hf = hf,
+                                    wf = wf,
+                                    sh = sh,
+                                    pr = pr,
+                                    r = rw,
+                                    c = cell,
+                                    o = out
+                                )
+                                .unwrap();
+                                vec_dirty_bufs.insert(out);
+                                vec_compute_dst_bufs.insert(out);
+                                ssa_to_buf.insert(result.clone(), out);
+                                values.insert(
+                                    result,
+                                    CppValue { expr: format!("{out}"), cpp_type: "uint32_t".to_string() },
+                                );
+                            }
+                            _ => {
+                                return Err("`__tile_matvec_w8a8_gm_f32` operands must all be GM args".to_string());
+                            }
+                        }
                     }
                 }
                 continue;

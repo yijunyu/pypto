@@ -105,11 +105,31 @@ W8A8_MV = [
     ("proj_w8a8_engine_1x1024_k4096", 4096, 1024),
     ("proj_w8a8_engine_1x32768_k1024", 1024, 32768),
     ("proj_w8a8_engine_1x512_k4096", 4096, 512),
-    # k=8192 is NOT in the corpus: the arm needs eight live buffers and only fits by
-    # ALIASING them in UB, which corrupts 25 of 4096 outputs. With aliasing correctly
-    # forbidden for arm-allocated buffers the emitter refuses it as a UB overflow, which
-    # is the honest outcome until the K loop is chunked.
+    # k=8192 uses the CHUNKED arm: the non-chunked one needs eight k-wide buffers and is
+    # refused as a UB overflow, and its earlier "successful" emission only fit by aliasing
+    # them (25 of 4096 outputs +inf). The chunked form keeps every buffer CHUNK-wide, so k
+    # may exceed the unified buffer.
+    ("proj_w8a8_engine_1x4096_k8192", 8192, 4096),
 ]
+
+
+def w8a8_mv_chunked(slot, k, n):
+    """The chunked form: x is read from GM per chunk, so no k-wide activation tile."""
+    body = (
+        c("r", 1)
+        + c("kk", k)
+        + c("nn", n)
+        + '    %z = llvm.mlir.constant(0 : i32) : i32\n'
+        f'    %res = llvm.call @__tile_matvec_w8a8_gm_f32(%xbuf, %w, %sc, %of, %z, %nn, %kk) : '
+        f'(!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32) -> i32\n'
+        f'    llvm.call @__tile_store_f32(%o, %res, %r, %nn) : (!llvm.ptr<1>, i32, i32, i32) -> ()\n'
+    )
+    return (
+        "// Engine slot (ds4-rs-ascend): W8A8 matvec, K CHUNKED so k may exceed UB.\n"
+        "module {\n  llvm.func @" + slot + "(%xbuf: !llvm.ptr<1>, %w: !llvm.ptr<1>, "
+        "%sc: !llvm.ptr<1>, %of: !llvm.ptr<1>, %o: !llvm.ptr<1>) attributes {hacc.entry} {\n"
+        + body + "    llvm.return\n  }\n}\n"
+    )
 
 
 def w8a8_mv(slot, k, n):
@@ -145,7 +165,8 @@ def kernels():
         )
         out[f"rmsnorm_engine_1x{n}"] = mod(f"engine_rmsnorm_1_{n}", body)
     for slot, k, n in W8A8_MV:
-        out[slot] = w8a8_mv(slot, k, n)
+        # the chunked arm is the one that fits k above the buffer
+        out[slot] = w8a8_mv_chunked(slot, k, n) if k > 4096 else w8a8_mv(slot, k, n)
     slot, width, half = ROPE_HALVES
     out[slot] = rope_halves(slot, width, half)
     return out

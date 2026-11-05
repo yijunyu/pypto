@@ -994,6 +994,19 @@ extern "C" {
         cols: u32,
     ) -> u32;
 
+    /// CHUNKED w8a8 matvec: both the activation and the weight come from GM, one K-chunk at
+    /// a time, so k may exceed the unified buffer. Same arithmetic as
+    /// `__tile_matvec_w8a8_f32`, which needs eight k-wide buffers and refuses k=8192.
+    pub fn __tile_matvec_w8a8_gm_f32(
+        x: *const f32,
+        w: *const i8,
+        sc: *const f32,
+        off: *const f32,
+        dst: u32,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+
     /// Streaming f32 matvec: the weight's GM POINTER, one row resident at a time.
     /// The f32 sibling of `__tile_matvec_w8a8_f32` and the first half of the q8 path.
     pub fn __tile_matvec_gm_f32(
