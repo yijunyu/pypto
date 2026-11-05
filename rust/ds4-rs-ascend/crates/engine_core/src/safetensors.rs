@@ -23,6 +23,7 @@ use crate::layer_view::MmapSource;
 pub enum Dtype {
     F32,
     F16,
+    BF16,
     I8,
     U8,
     I32,
@@ -34,6 +35,7 @@ impl Dtype {
         match s {
             "F32" => Dtype::F32,
             "F16" => Dtype::F16,
+            "BF16" => Dtype::BF16,
             "I8" => Dtype::I8,
             "U8" => Dtype::U8,
             "I32" => Dtype::I32,
@@ -45,7 +47,7 @@ impl Dtype {
     pub fn width(self) -> Option<usize> {
         match self {
             Dtype::F32 | Dtype::I32 => Some(4),
-            Dtype::F16 => Some(2),
+            Dtype::F16 | Dtype::BF16 => Some(2),
             Dtype::I8 | Dtype::U8 => Some(1),
             Dtype::Other => None,
         }
@@ -363,6 +365,126 @@ pub fn dequant_w8a8(q: &[i8], scale: &[f32], offset: &[f32], rows: usize, cols: 
         }
     }
     out
+}
+
+
+// ---------------------------------------------------------------------------
+// The package: an index of which shard holds which tensor, opened lazily.
+// ---------------------------------------------------------------------------
+
+/// A W8A8 deployment package: sharded safetensors plus the index that maps each
+/// tensor name to its shard. `quant_model_description.json` says HOW each tensor is
+/// quantised; the index says WHERE it lives.
+pub struct Package {
+    dir: std::path::PathBuf,
+    shard_of: HashMap<String, String>,
+    open_shards: std::cell::RefCell<HashMap<String, std::rc::Rc<Shard>>>,
+}
+
+impl Package {
+    /// Open a package directory by reading `quant_model_weights.safetensors.index.json`.
+    pub fn open(dir: &Path) -> Result<Self> {
+        let index_path = dir.join("quant_model_weights.safetensors.index.json");
+        let text = std::fs::read_to_string(&index_path)
+            .with_context(|| format!("reading {}", index_path.display()))?;
+        let shard_of = parse_weight_map(&text)
+            .with_context(|| format!("parsing {}", index_path.display()))?;
+        if shard_of.is_empty() {
+            bail!("{}: weight_map is empty", index_path.display());
+        }
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            shard_of,
+            open_shards: std::cell::RefCell::new(HashMap::new()),
+        })
+    }
+
+    pub fn n_tensors(&self) -> usize {
+        self.shard_of.len()
+    }
+
+    /// Tensor names, sorted (a HashMap's order is not reproducible in a report).
+    pub fn names(&self) -> Vec<&str> {
+        let mut v: Vec<&str> = self.shard_of.keys().map(|s| s.as_str()).collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// The shard holding `name`, opened on first use and then reused.
+    pub fn shard_for(&self, name: &str) -> Result<std::rc::Rc<Shard>> {
+        let file = self
+            .shard_of
+            .get(name)
+            .ok_or_else(|| anyhow!("no such tensor in the package: {name}"))?;
+        if let Some(s) = self.open_shards.borrow().get(file) {
+            return Ok(s.clone());
+        }
+        let shard = std::rc::Rc::new(Shard::open(&self.dir.join(file))?);
+        self.open_shards
+            .borrow_mut()
+            .insert(file.clone(), shard.clone());
+        Ok(shard)
+    }
+
+    /// `(tensor ref)` for `name`, resolved through its shard.
+    pub fn tensor(&self, name: &str) -> Result<TensorRef> {
+        let shard = self.shard_for(name)?;
+        shard
+            .get(name)
+            .cloned()
+            .ok_or_else(|| anyhow!("{name}: in the index but not in its shard's header"))
+    }
+}
+
+/// Extract `weight_map` (name -> shard file) from an index.json.
+///
+/// Narrow on purpose: the index also carries a `metadata` object of numbers, which is
+/// skipped rather than parsed into anything.
+fn parse_weight_map(text: &str) -> Result<HashMap<String, String>> {
+    let mut p = P { b: text.as_bytes(), i: 0 };
+    p.ws();
+    p.expect(b'{')?;
+    let mut out = HashMap::new();
+    loop {
+        p.ws();
+        if p.eat(b'}') {
+            break;
+        }
+        let key = p.string()?;
+        p.ws();
+        p.expect(b':')?;
+        p.ws();
+        if key == "weight_map" {
+            p.expect(b'{')?;
+            loop {
+                p.ws();
+                if p.eat(b'}') {
+                    break;
+                }
+                let name = p.string()?;
+                p.ws();
+                p.expect(b':')?;
+                p.ws();
+                let file = p.string()?;
+                out.insert(name, file);
+                p.ws();
+                if p.eat(b',') {
+                    continue;
+                }
+                p.expect(b'}')?;
+                break;
+            }
+        } else {
+            p.skip_value()?;
+        }
+        p.ws();
+        if p.eat(b',') {
+            continue;
+        }
+        p.expect(b'}')?;
+        break;
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
