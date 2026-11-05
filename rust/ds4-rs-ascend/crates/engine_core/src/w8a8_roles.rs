@@ -150,6 +150,57 @@ impl<'a> PackageSource<'a> {
     }
 }
 
+
+/// The two data operations the decoder loop performs on a weight source.
+///
+/// A GGUF view BORROWS from one mmap; a W8A8 package spans 74 files and can only OWN what it
+/// returns. `bytes_for` therefore hands back a `Cow`, which is what lets one loop serve both
+/// containers without the borrowed variant paying for an allocation.
+pub trait WeightSource {
+    /// A role as f32, whatever the on-disk dtype.
+    fn dequant_f32(&self, h: &crate::layer_view::TensorHandle) -> Result<Vec<f32>>;
+    /// The role's bytes, borrowed when the container can lend them.
+    fn bytes_for(&self, h: &crate::layer_view::TensorHandle) -> Result<std::borrow::Cow<'_, [u8]>>;
+}
+
+impl WeightSource for crate::layer_view::LayerViews {
+    fn dequant_f32(&self, h: &crate::layer_view::TensorHandle) -> Result<Vec<f32>> {
+        self.dequant_f32_simple(h)
+    }
+    fn bytes_for(&self, h: &crate::layer_view::TensorHandle) -> Result<std::borrow::Cow<'_, [u8]>> {
+        crate::layer_view::LayerViews::bytes_for(self, h)
+    }
+}
+
+/// A package seen through the same trait.
+///
+/// The handles it is given carry PACKAGE names (`layers.7.attn.wq_a.weight`), which is why the
+/// role map exists: the builder constructs handles with the names its own container understands,
+/// and the loop below the trait never needs to know which container it is reading.
+pub struct PackageViews<'a> {
+    pkg: &'a Package,
+}
+
+impl<'a> PackageViews<'a> {
+    pub fn new(pkg: &'a Package) -> Self {
+        Self { pkg }
+    }
+}
+
+impl WeightSource for PackageViews<'_> {
+    fn dequant_f32(&self, h: &crate::layer_view::TensorHandle) -> Result<Vec<f32>> {
+        // The handle's `ttype` is a GGML type; what matters here is the PACKAGE's own dtype
+        // for that tensor, which is authoritative because it is what the bytes actually are.
+        match self.pkg.tensor(&h.name)?.dtype {
+            Dtype::I8 => self.pkg.dequant_tensor(&h.name),
+            _ => self.pkg.f32_tensor(&h.name),
+        }
+    }
+    fn bytes_for(&self, h: &crate::layer_view::TensorHandle) -> Result<std::borrow::Cow<'_, [u8]>> {
+        Ok(std::borrow::Cow::Owned(self.pkg.raw(&h.name)?.1))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +227,71 @@ mod tests {
         assert!(z.iter().any(|r| r.role == "output"));
         let other = layer_roles(1);
         assert!(!other.iter().any(|r| r.role == "token_embd"));
+    }
+
+
+    /// A one-tensor package: `layers.0.attn.wq_a.weight` as I8 with a per-channel scale.
+    fn tiny_package(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("roles-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // two rows of two: q = [[1,2],[3,4]], scale [1,10], offset [0,1] -> [1,2,20,30]
+        let q = [1u8, 2, 3, 4];
+        let mut sc = Vec::new();
+        for v in [1.0f32, 10.0] { sc.extend_from_slice(&v.to_le_bytes()); }
+        let mut of = Vec::new();
+        for v in [0.0f32, 1.0] { of.extend_from_slice(&v.to_le_bytes()); }
+        let items: Vec<(String, String, u64, Vec<u8>)> = vec![
+            ("layers.0.attn.wq_a.weight".into(), "I8".into(), 4, q.to_vec()),
+            ("layers.0.attn.wq_a.weight_scale".into(), "F32".into(), 8, sc),
+            ("layers.0.attn.wq_a.weight_offset".into(), "F32".into(), 8, of),
+        ];
+        let mut entries = Vec::new();
+        let mut data = Vec::new();
+        let mut off = 0u64;
+        for (name, dtype, _n, bytes) in &items {
+            let end = off + bytes.len() as u64;
+            let shape = if name.ends_with(".weight") { "[2,2]" } else { "[2,1]" };
+            entries.push(format!(
+                "\"{name}\":{{\"dtype\":\"{dtype}\",\"shape\":{shape},\"data_offsets\":[{off},{end}]}}"
+            ));
+            off = end;
+            data.extend_from_slice(bytes);
+        }
+        let header = format!("{{{}}}", entries.join(","));
+        let mut shard = Vec::new();
+        shard.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        shard.extend_from_slice(header.as_bytes());
+        shard.extend_from_slice(&data);
+        std::fs::write(dir.join("s-00001.safetensors"), &shard).unwrap();
+        let map: Vec<String> = items.iter().map(|(n, _, _, _)| format!("\"{n}\":\"s-00001.safetensors\"")).collect();
+        std::fs::write(
+            dir.join("quant_model_weights.safetensors.index.json"),
+            format!("{{\"weight_map\":{{{}}}}}", map.join(",")),
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_package_serves_the_same_trait_as_a_gguf_view() {
+        // The point of the trait: the loop below it does not know which container it reads.
+        // This exercises the package side with a handle whose NAME is a package name.
+        let dir = tiny_package("trait");
+        let pkg = Package::open(&dir).unwrap();
+        let src = PackageViews::new(&pkg);
+        let h = crate::layer_view::TensorHandle {
+            name: "layers.0.attn.wq_a.weight".to_string(),
+            role: "attn_q_a",
+            ttype: crate::gguf::GgmlType::F32, // ignored: the package's own dtype is authoritative
+            dims: vec![2, 2],
+            abs_offset: 0,
+            byte_size: 4,
+        };
+        assert_eq!(src.dequant_f32(&h).unwrap(), vec![1.0, 2.0, 20.0, 30.0]);
+        let raw = src.bytes_for(&h).unwrap();
+        assert_eq!(&*raw, &[1u8, 2, 3, 4]);
+        assert!(matches!(raw, std::borrow::Cow::Owned(_)), "a package can only own its bytes");
     }
 
     #[test]

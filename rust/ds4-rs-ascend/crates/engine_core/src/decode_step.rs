@@ -479,7 +479,8 @@ impl ComposedModelWeights {
             // No-copy: borrow the q8 lm_head bytes straight from the mmap (same
             // SAFETY as the attn q8 borrow — DecodeRunner retains the mmap past
             // `composed`; MAP_SHARED keeps the pages clean file-backed).
-            let s: &[u8] = views.bytes_for(lm_head_h)?;
+            let s = views.bytes_for(lm_head_h)?;
+            let s: &[u8] = &s;
             std::borrow::Cow::Borrowed(unsafe { std::mem::transmute::<&[u8], &'static [u8]>(s) })
         } else {
             std::borrow::Cow::Borrowed(&[])
@@ -658,7 +659,8 @@ impl ComposedModelWeights {
                 Some(h)
                     if comp_f16_on && !is_hash_layer && h.ttype == crate::gguf::GgmlType::F16 =>
                 {
-                    let s: &[u8] = views.bytes_for(h)?;
+                    let s = views.bytes_for(h)?;
+                    let s: &[u8] = &s;
                     let s: &'static [u8] =
                         unsafe { std::mem::transmute::<&[u8], &'static [u8]>(s) };
                     std::borrow::Cow::Borrowed(s)

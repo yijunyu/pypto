@@ -319,7 +319,12 @@ impl LayerViews {
     }
 
     /// Raw byte slice for a handle. Bounds-checked.
-    pub fn bytes_for(&self, h: &TensorHandle) -> Result<&[u8]> {
+    /// The tensor's bytes.
+    ///
+    /// `Cow` rather than `&[u8]`: a GGUF view BORROWS from its single mmap, while a W8A8 package
+    /// spans 74 files and can only OWN what it returns. Returning `Cow::Borrowed` here keeps the
+    /// GGUF path allocation-free, and lets one decoder loop serve both containers.
+    pub fn bytes_for(&self, h: &TensorHandle) -> Result<std::borrow::Cow<'_, [u8]>> {
         let start = h.abs_offset as usize;
         let end = start
             .checked_add(h.byte_size as usize)
@@ -333,7 +338,7 @@ impl LayerViews {
                 self.bytes.len()
             );
         }
-        Ok(&self.bytes[start..end])
+        Ok(std::borrow::Cow::Borrowed(&self.bytes[start..end]))
     }
 
     /// Dequantize an entire tensor to f32. Supports F32 / F16 directly

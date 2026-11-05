@@ -1976,7 +1976,8 @@ impl AttnLayerWeights {
  if comp_f16_on {
  if let Some(h) = view.handles.get(role) {
  if h.ttype == crate::gguf::GgmlType::F16 {
- let s: &[u8] = views.bytes_for(h)?;
+ let s_owned = views.bytes_for(h)?;
+ let s: &[u8] = &s_owned;
  let s: &'static [u8] =
  unsafe { std::mem::transmute::<&[u8], &'static [u8]>(s) };
  return Ok(Cow::Borrowed(s));
@@ -2034,7 +2035,8 @@ impl AttnLayerWeights {
  // Mmap struct doesn't remap the pages. MAP_SHARED + the no-copy
  // MTLBuffer keep the pages clean file-backed. Lifetime-extend to
  // 'static — a self-contained invariant, never escapes DecodeRunner.
- let s: &[u8] = views.bytes_for(h)?;
+ let s_owned = views.bytes_for(h)?;
+ let s: &[u8] = &s_owned;
  let s: &'static [u8] = unsafe { std::mem::transmute::<&[u8], &'static [u8]>(s) };
  // QUALITY PROBE (DS4_ATTN_Q4_PROBE): degrade the ATTENTION projection
  // weights (mla_*, attn_output_*) to q4 precision in a q8 container so the
