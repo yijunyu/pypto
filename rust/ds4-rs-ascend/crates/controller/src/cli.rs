@@ -120,6 +120,13 @@ pub struct DeployOpts {
     pub prompt: Option<String>,
     /// Serve: maximum new tokens to generate per prompt.
     pub max_new: usize,
+    /// Serve WITHOUT planning the split.
+    ///
+    /// Planning reads `npu-smi`, so on a box with no Ascend driver `deploy` could not
+    /// serve at all -- even though the single-stream path it falls into does not use the
+    /// plan. This skips step 2 and says so; the plan is the multi-chip throughput path and
+    /// is not wired into the engine anyway.
+    pub no_plan: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +151,7 @@ impl Default for DeployOpts {
             four_bit: true,
             prompt: None,
             max_new: 256,
+            no_plan: false,
         }
     }
 }
@@ -269,6 +277,7 @@ fn parse_deploy(
             }
             "--int8" => o.four_bit = false,
             "--4bit" => o.four_bit = true,
+            "--no-plan" => o.no_plan = true,
             "--prompt" => o.prompt = Some(take_val("--prompt", it, v.as_deref())?),
             "--max" | "--max-new" => {
                 o.max_new = take_val("--max", it, v.as_deref())?

@@ -183,6 +183,7 @@ impl LayerParams {
  g,
  &[
  "deepseek4.attention.head_count",
+ "deepseek41.num_attention_heads",
  "deepseek2.attention.head_count",
  ],
  )
@@ -191,6 +192,7 @@ impl LayerParams {
  g,
  &[
  "deepseek4.attention.key_length",
+ "deepseek41.head_dim",
  "deepseek2.attention.key_length",
  ],
  )

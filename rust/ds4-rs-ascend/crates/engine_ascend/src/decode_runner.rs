@@ -109,11 +109,40 @@ impl DecodeRunner {
                  the PTO kernels are built for `deepseek4`"
             );
         }
+        // V4.1 spells these the way the HuggingFace config does, not in GGUF's own
+        // vocabulary: `deepseek41.num_hidden_layers`, `deepseek41.hidden_size` and so on.
+        // `engine_core::gguf` already carries that fallback table for its own reads, but
+        // this runner asked only for `{arch}.{gguf_name}` -- so a V4.1 export failed with
+        // "missing deepseek41.block_count" while the loader beside it knew the answer.
+        // Both spellings are listed per field for the same reason they are listed there:
+        // the V4 releases carry only the GGUF names and V4.1 carries only the HF ones.
         let u32_of = |k: &str| -> Option<u32> {
-            match g.get_meta(&format!("{arch}.{k}")) {
-                Some(MetaValue::U32(v)) => Some(*v),
-                _ => None,
+            let aliases: &[&str] = match k {
+                "block_count" => &["block_count", "num_hidden_layers"],
+                "embedding_length" => &["embedding_length", "hidden_size"],
+                "attention.head_count" => &["attention.head_count", "num_attention_heads"],
+                "attention.head_count_kv" => {
+                    &["attention.head_count_kv", "num_key_value_heads"]
+                }
+                "attention.key_length" => &["attention.key_length", "head_dim"],
+                "expert_count" => &["expert_count", "n_routed_experts"],
+                "vocab_size" => &["vocab_size"],
+                _ => &[k],
+            };
+            // BOTH PREFIXES, not just the declared architecture. The 1017 export
+            // declares `general.architecture = deepseek4` while writing every key under
+            // `deepseek41.`, so a single-prefix read reports "missing
+            // deepseek4.attention.head_count" for a file that carries
+            // `deepseek41.num_attention_heads`. `deepseek41` is tried first because a
+            // file that has it is the newer layout.
+            for prefix in ["deepseek41", "deepseek4", arch.to_string().as_str()] {
+                for a in aliases {
+                    if let Some(MetaValue::U32(v)) = g.get_meta(&format!("{prefix}.{a}")) {
+                        return Some(*v);
+                    }
+                }
             }
+            None
         };
         let need = |k: &str| -> Result<u32> {
             u32_of(k).ok_or_else(|| anyhow!("{}: missing {arch}.{k}", path.display()))

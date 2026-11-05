@@ -234,10 +234,18 @@ fn run_deploy(opts: cli::DeployOpts) -> Result<()> {
         model::ensure_available(spec, opts.model_dir.as_deref(), opts.allow_download)?;
     println!("model: {}", weights.display());
 
-    // 2. Profile the box and plan the split.
-    let chips = memprofile::read_profile(opts.mem_source)?;
-    let p = plan::build_plan(&opts, &chips)?;
-    print!("{}", plan::render(&p));
+    // 2. Profile the box and plan the split -- unless asked not to.
+    if opts.no_plan {
+        println!(
+            "--no-plan: skipping the memory profile and the split. This serves \n\
+             single-stream on device 0; the multi-chip plan is the throughput path and is \n\
+             not wired into the engine, so nothing measured below depends on it."
+        );
+    } else {
+        let chips = memprofile::read_profile(opts.mem_source)?;
+        let p = plan::build_plan(&opts, &chips)?;
+        print!("{}", plan::render(&p));
+    }
 
     // 3. Serve: open the model and generate. Single-stream on device 0 (weights
     //    resident if they fit host RAM, else SSD-streamed); the planned split
