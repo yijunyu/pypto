@@ -1538,11 +1538,10 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
             has_binary_ops = true;
         }
         if line.contains("@__tile_matvec_w8a8_f32") {
-            // int8 weight row (k), cast to f32 (k), offset-subtract (k), product (k),
-            // reduce work (k/2), cell (8), out (n). SEVEN, and the declarations are
-            // generated from this count -- a short count here has already cost two
-            // device builds in this campaign.
-            vec_buf_count += 7;
+            // int8 weight row (k), HALF staged (k), f32 (k), offset-subtract (k),
+            // product (k), reduce work (k/2), cell (8), out (n). EIGHT, and the
+            // declarations are generated from this count.
+            vec_buf_count += 8;
         }
         if line.contains("@__tile_matvec_q8_0_gm_f32") {
             // x (k) comes from the load's buffer, out (n) is this arm's only allocation.
@@ -8042,6 +8041,13 @@ fn generate_vector_compute_code(
                                 buf_counter += 1;
                                 buf_sizes.insert(w8, nb(k_expr.clone()));
                                 buf_elem_types.insert(w8, "int8_t".to_string());
+                                // dav_c220 has NO float<-int8 cast: the supported pairs are
+                                // half<-int8 and float<-half. So int8 -> half -> float, which
+                                // is lossless because every int8 is exact in half.
+                                let hf = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(hf, nb(k_expr.clone()));
+                                buf_elem_types.insert(hf, "half".to_string());
                                 let wf = buf_counter;
                                 buf_counter += 1;
                                 buf_sizes.insert(wf, nb(k_expr.clone()));
@@ -8067,7 +8073,9 @@ fn generate_vector_compute_code(
   for (int __i = 0; __i < __n; ++__i) {{
     AscendC::DataCopy(buf{w8}, gm{wi}Tensor[__i * __k], __k);
     AscendC::PipeBarrier<PIPE_ALL>();
-    AscendC::Cast(buf{wf}, buf{w8}, AscendC::RoundMode::CAST_NONE, __k);
+    AscendC::Cast(buf{hf}, buf{w8}, AscendC::RoundMode::CAST_NONE, __k);
+    AscendC::PipeBarrier<PIPE_V>();
+    AscendC::Cast(buf{wf}, buf{hf}, AscendC::RoundMode::CAST_NONE, __k);
     AscendC::PipeBarrier<PIPE_V>();
     const float __sc = ((__gm__ float *)gm{si}Tensor.GetPhyAddr())[__i];
     const float __off = ((__gm__ float *)gm{oi}Tensor.GetPhyAddr())[__i];
@@ -8088,6 +8096,7 @@ fn generate_vector_compute_code(
                                     si = si,
                                     oi = oi,
                                     w8 = w8,
+                                    hf = hf,
                                     wf = wf,
                                     sh = sh,
                                     pr = pr,
