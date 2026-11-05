@@ -42,6 +42,8 @@ deepseek_v41/ascendc/swiglu_v41_1x2304               dav-2201 bm_swiglu_1_2304_d
 glm_5_3/ascendc/shexp_gate_up_silu_glm53_1x2048      dav-2201 glm53_shexp_swiglu_do        2048 4   8 1e-5f    1e-6
 glm_5_3/ascendc/routed_gate_up_glm53_8x2048       dav-2201 glm53_routed_gate_up_2048_do   16384 4  8 1e-5f 1e-5
 glm_5_3/ascendc/routed_down_glm53_1x2048          dav-2201 glm53_routed_down_2048_do        2048 3  2 1e-5f 1e-5
+engine/ascendc/rmsnorm_engine_1x512                  dav-2201 engine_rmsnorm_1_512_do          512 2  1 1e-5f 1e-6
+engine/ascendc/rmsnorm_engine_1x1024                 dav-2201 engine_rmsnorm_1_1024_do        1024 2  1 1e-5f 1e-6
 kimi_k3/ascendc/kda_delta_k3_1x128                   dav-2201 k3_kda_delta_128_do           128 5   4 1e-5f    1e-6
 glm_5_3/ascendc/kda_delta_glm53_1x128                dav-2201 glm53_kda_delta_128_do        128 5   4 1e-5f    1e-6
 glm_5_3/ascendc/kda_conv_glm53_1x4096_k4             dav-2201 glm53_kda_conv_4096_do       4096 9  11 1e-5f    1e-5

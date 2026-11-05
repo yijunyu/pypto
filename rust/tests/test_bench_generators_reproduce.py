@@ -39,6 +39,10 @@ GENERATORS = {
     "deepseek_v41": "gen_deepseek_v41.py",
     "glm_5_3": "gen_glm_5_3.py",
     "kimi_k3": "gen_kimi_k3.py",
+    # The engine-slots corpus: kernels the Rust serving engine launches, at the
+    # shapes it launches them. A row here exists for an ENGINE SLOT rather than a
+    # model block, which is why it is a separate corpus and not a model row.
+    "engine": "gen_engine.py",
 }
 
 

@@ -64,7 +64,10 @@ def test_there_are_refusals_to_classify():
     """
     rows = refusals()
     assert len(rows) > 20, f"only {len(rows)} refusals found; the corpus or the reader broke"
-    assert len(corpora()) == 4
+    # Five since the engine-slots corpus landed: the four model/playground
+    # corpora plus `engine`, whose rows exist for an engine slot rather than a
+    # model block. The count is pinned so a corpus cannot appear unclassified.
+    assert len(corpora()) == 5
 
 
 def test_every_refusal_lands_in_exactly_one_declared_kind():
