@@ -110,6 +110,10 @@ W8A8_MV = [
     # them (25 of 4096 outputs +inf). The chunked form keeps every buffer CHUNK-wide, so k
     # may exceed the unified buffer.
     ("proj_w8a8_engine_1x4096_k8192", 8192, 4096),
+    # `hc_mv`: 24 outputs over a 16384-wide activation, from the layer0 fixture's
+    # "dst[24] = W_expert . x[16384]". The same chunked arm serves it -- k=16384 needs four
+    # chunks -- in the deployment's w8a8 form rather than the fixture's q8_0.
+    ("proj_w8a8_engine_1x24_k16384", 16384, 24),
 ]
 
 

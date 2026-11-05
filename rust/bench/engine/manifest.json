@@ -5,11 +5,11 @@
  "shapes_source": "rust/ds4-rs-ascend/crates/engine_ascend/src/device.rs LAYER0_KERNELS",
  "generator": "shapes/gen_engine.py",
  "totals": {
-  "kernels": 8,
-  "tile": 8,
+  "kernels": 9,
+  "tile": 9,
   "pto": 2,
-  "ascendc": 8,
-  "device_verified": 8
+  "ascendc": 9,
+  "device_verified": 9
  },
  "kernels": {
   "rmsnorm_engine_1x512": {
@@ -115,6 +115,20 @@
     "tolerance": 1e-06,
     "n": 4096,
     "k": 8192
+   }
+  },
+  "proj_w8a8_engine_1x24_k16384": {
+   "tile": "tile/proj_w8a8_engine_1x24_k16384.tile",
+   "pto": null,
+   "ascendc": "ascendc/proj_w8a8_engine_1x24_k16384.cpp",
+   "device_check": "PASS 2026-11-05 on 910B2, 3 launches: wrong=0, backward relative error 4.639e-08 against an f64 oracle, tolerance 1e-6; 0.090650 ms. This is the engine's `hc_mv` slot -- 24 outputs over a 16384-wide activation, from the layer0 fixture's \"dst[24] = W_expert . x[16384]\" -- served by the CHUNKED w8a8 kernel, i.e. the deployment quantisation rather than the fixture's q8_0.",
+   "device_metrics": {
+    "backward_rel": 4.639e-08,
+    "time_ms": 0.09065,
+    "repeat": 3,
+    "tolerance": 1e-06,
+    "n": 24,
+    "k": 16384
    }
   }
  }
