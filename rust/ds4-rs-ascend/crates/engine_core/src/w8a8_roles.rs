@@ -15,7 +15,7 @@ use anyhow::{anyhow, bail, Result};
 /// A role the decoder needs, with the package name it corresponds to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleTensor {
-    /// The engine's role name, e.g. `attn_q_b`.
+    /// The engine's role name, e.g. `mla_q_b` (the names are the decoder's, not the package's).
     pub role: &'static str,
     /// The package tensor that carries it, e.g. `layers.7.attn.wq_b.weight`.
     pub name: String,
@@ -26,9 +26,13 @@ pub fn layer_roles(layer: usize) -> Vec<RoleTensor> {
     let l = layer;
     let mut v = vec![
         RoleTensor { role: "attn_norm", name: format!("layers.{l}.attn_norm.weight") },
-        RoleTensor { role: "attn_q_a", name: format!("layers.{l}.attn.wq_a.weight") },
-        RoleTensor { role: "attn_q_b", name: format!("layers.{l}.attn.wq_b.weight") },
-        RoleTensor { role: "attn_kv", name: format!("layers.{l}.attn.wkv.weight") },
+        RoleTensor { role: "mla_q_a", name: format!("layers.{l}.attn.wq_a.weight") },
+        RoleTensor { role: "mla_q_b", name: format!("layers.{l}.attn.wq_b.weight") },
+        RoleTensor { role: "mla_kv", name: format!("layers.{l}.attn.wkv.weight") },
+        // The package's `q_norm`/`kv_norm` ARE the engine's `mla_q_a_norm`/`mla_kv_a_norm`;
+        // the names were read out of the package rather than guessed.
+        RoleTensor { role: "mla_q_a_norm", name: format!("layers.{l}.attn.q_norm.weight") },
+        RoleTensor { role: "mla_kv_a_norm", name: format!("layers.{l}.attn.kv_norm.weight") },
         RoleTensor { role: "attn_output_a", name: format!("layers.{l}.attn.wo_a.weight") },
         RoleTensor { role: "attn_output_b", name: format!("layers.{l}.attn.wo_b.weight") },
         RoleTensor { role: "ffn_norm", name: format!("layers.{l}.ffn_norm.weight") },
@@ -36,6 +40,14 @@ pub fn layer_roles(layer: usize) -> Vec<RoleTensor> {
         RoleTensor { role: "ffn_gate_shexp", name: format!("layers.{l}.ffn.shared_experts.w1.weight") },
         RoleTensor { role: "ffn_down_shexp", name: format!("layers.{l}.ffn.shared_experts.w2.weight") },
         RoleTensor { role: "ffn_up_shexp", name: format!("layers.{l}.ffn.shared_experts.w3.weight") },
+        // The "HC" bound-and-collapse tensors. The decoder requires `hc_attn_fn` on every layer;
+        // the first attempt at this map omitted them and the engine said so by name.
+        RoleTensor { role: "hc_attn_fn", name: format!("layers.{l}.hc_attn_fn") },
+        RoleTensor { role: "hc_attn_base", name: format!("layers.{l}.hc_attn_base") },
+        RoleTensor { role: "hc_attn_scale", name: format!("layers.{l}.hc_attn_scale") },
+        RoleTensor { role: "hc_ffn_fn", name: format!("layers.{l}.hc_ffn_fn") },
+        RoleTensor { role: "hc_ffn_base", name: format!("layers.{l}.hc_ffn_base") },
+        RoleTensor { role: "hc_ffn_scale", name: format!("layers.{l}.hc_ffn_scale") },
     ];
     // The model-wide roles are carried on layer 0 so a single call site can resolve everything.
     if layer == 0 {
@@ -344,7 +356,7 @@ mod tests {
         let src = PackageViews::new(&pkg);
         let h = crate::layer_view::TensorHandle {
             name: "layers.0.attn.wq_a.weight".to_string(),
-            role: "attn_q_a",
+            role: "mla_q_a",
             ttype: crate::gguf::GgmlType::F32, // ignored: the package's own dtype is authoritative
             dims: vec![2, 2],
             abs_offset: 0,
