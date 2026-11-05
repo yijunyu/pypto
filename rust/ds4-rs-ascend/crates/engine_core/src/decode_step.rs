@@ -448,8 +448,8 @@ impl ComposedModelWeights {
         Self::from_views_impl(views, manifest, defaults, true)
     }
 
-    fn from_views_impl(
-        views: &crate::layer_view::LayerViews,
+    fn from_views_impl<S: crate::w8a8_roles::WeightSource>(
+        src: &S,
         manifest: &crate::gguf::ModelManifest,
         defaults: crate::attn_dispatch::DefaultsDs4,
         lean: bool,
@@ -460,15 +460,16 @@ impl ComposedModelWeights {
         let n_layers = manifest.n_layers as usize;
         let n_experts = manifest.n_experts as usize;
         let n_experts_used = manifest.n_experts_used as usize;
+        // Bound once: `globals()` may return an OWNED map for a package, and a reference into a
+        // temporary would not outlive the reads below.
+        let globals = src.globals()?;
 
-        let final_norm_h = views
-            .global
+        let final_norm_h = globals
             .get("final_norm")
             .ok_or_else(|| anyhow::anyhow!("missing global tensor: final_norm"))?;
-        let final_norm_gamma = views.dequant_f32_simple(final_norm_h)?;
+        let final_norm_gamma = src.dequant_f32(final_norm_h)?;
 
-        let lm_head_h = views
-            .global
+        let lm_head_h = globals
             .get("lm_head")
             .ok_or_else(|| anyhow::anyhow!("missing global tensor: lm_head"))?;
         let lm_head_is_q8 = lm_head_h.ttype == crate::gguf::GgmlType::Q8_0;
@@ -479,7 +480,7 @@ impl ComposedModelWeights {
             // No-copy: borrow the q8 lm_head bytes straight from the mmap (same
             // SAFETY as the attn q8 borrow — DecodeRunner retains the mmap past
             // `composed`; MAP_SHARED keeps the pages clean file-backed).
-            let s = views.bytes_for(lm_head_h)?;
+            let s = src.bytes_for(lm_head_h)?;
             let s: &[u8] = &s;
             std::borrow::Cow::Borrowed(unsafe { std::mem::transmute::<&[u8], &'static [u8]>(s) })
         } else {
@@ -494,7 +495,7 @@ impl ComposedModelWeights {
         let want_q4_requant =
             std::env::var("DS4_Q4_LMHEAD").ok().as_deref() == Some("1") && lm_head_is_q8;
         let lm_head_q4: Vec<u8> = if lm_head_is_q4 {
-            let q4 = views.bytes_for(lm_head_h)?.to_vec();
+            let q4 = src.bytes_for(lm_head_h)?.to_vec();
             eprintln!(
                 "engine_core: q4 lm_head from disk ({} MB)",
                 q4.len() / (1024 * 1024)
@@ -575,27 +576,27 @@ impl ComposedModelWeights {
             );
             f
         } else {
-            views.dequant_f32_simple(lm_head_h)?
+            src.dequant_f32(lm_head_h)?
         };
 
         // Output-side HC fold weights (antirez ds4.c:7654-7681 `output_hc_head_one`).
         // All three must be present together; missing any is a manifest bug.
-        let output_hc_base = match views.global.get("output_hc_base") {
-            Some(h) => Some(views.dequant_f32_simple(h)?),
+        let output_hc_base = match globals.get("output_hc_base") {
+            Some(h) => Some(src.dequant_f32(h)?),
             None => None,
         };
-        let output_hc_fn = match views.global.get("output_hc_fn") {
-            Some(h) => Some(views.dequant_f32_simple(h)?),
+        let output_hc_fn = match globals.get("output_hc_fn") {
+            Some(h) => Some(src.dequant_f32(h)?),
             None => None,
         };
-        let output_hc_scale = match views.global.get("output_hc_scale") {
-            Some(h) => Some(views.dequant_f32_simple(h)?),
+        let output_hc_scale = match globals.get("output_hc_scale") {
+            Some(h) => Some(src.dequant_f32(h)?),
             None => None,
         };
 
         let mut layers = Vec::with_capacity(n_layers);
         for i in 0..n_layers {
-            let view = views.layer(i as u32);
+            let view = src.layer(i as u32)?;
             let mut params = crate::attn_dispatch::LayerParams::from_gguf(
                 &g,
                 manifest.d_model,
@@ -636,7 +637,7 @@ impl ComposedModelWeights {
                 .and_then(|v| v.get(i as usize).copied())
                 .unwrap_or(0.0);
             let attn = crate::attn_dispatch::AttnLayerWeights::from_layer_view(
-                views, view, params, shared_dim, shared_clamp, lean,
+                src, view.as_ref(), params, shared_dim, shared_clamp, lean,
             )?;
 
             // No-copy F16 router (`moe_router` is F16). Borrow only for NON-hash
@@ -659,7 +660,7 @@ impl ComposedModelWeights {
                 Some(h)
                     if comp_f16_on && !is_hash_layer && h.ttype == crate::gguf::GgmlType::F16 =>
                 {
-                    let s = views.bytes_for(h)?;
+                    let s = src.bytes_for(h)?;
                     let s: &[u8] = &s;
                     let s: &'static [u8] =
                         unsafe { std::mem::transmute::<&[u8], &'static [u8]>(s) };
@@ -676,7 +677,7 @@ impl ComposedModelWeights {
                 Vec::new()
             } else {
                 match view.get("ffn_norm") {
-                    Some(h) => views.dequant_f32_simple(h)?,
+                    Some(h) => src.dequant_f32(h)?,
                     None => vec![1.0f32; d_model],
                 }
             };
@@ -684,13 +685,13 @@ impl ComposedModelWeights {
                 Vec::new()
             } else {
                 match view.get("moe_router") {
-                    Some(h) => views.dequant_f32_simple(h)?,
+                    Some(h) => src.dequant_f32(h)?,
                     None => Vec::new(),
                 }
             };
             let router_bias = match view.get("moe_router_bias") {
                 Some(h) => {
-                    let v = views.dequant_f32_simple(h)?;
+                    let v = src.dequant_f32(h)?;
                     if i == 0 && std::env::var("DS4_DUMP_BIAS_LOAD").is_ok() {
                         let ss: f64 = v.iter().map(|&x| (x as f64) * (x as f64)).sum();
                         let rms = (ss / v.len() as f64).sqrt();
@@ -717,7 +718,7 @@ impl ComposedModelWeights {
             // with k = n_experts_used, I32 element type.
             let routing_table = match view.get("moe_routing_table") {
                 Some(h) if h.ttype == crate::gguf::GgmlType::I32 => {
-                    let raw = views.bytes_for(h)?;
+                    let raw = src.bytes_for(h)?;
                     let n = h.n_elems() as usize;
                     if raw.len() != n * 4 {
                         bail!("routing_table il={}: byte size {} != 4*{}", i, raw.len(), n);

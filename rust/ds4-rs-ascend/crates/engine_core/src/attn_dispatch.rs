@@ -1934,8 +1934,8 @@ impl AttnLayerWeights {
  /// `ModelManifest`) and threaded through unchanged. `shared_dim` and
  /// `shared_clamp` come from caller-provided defaults (antirez uses
  /// `shared_dim` = `moe_intermediate_size` and `shared_clamp` = 7.0).
- pub fn from_layer_view(
- views: &crate::layer_view::LayerViews,
+ pub fn from_layer_view<S: crate::w8a8_roles::WeightSource>(
+ src: &S,
  view: &crate::layer_view::LayerView,
  params: LayerParams,
  shared_dim: u32,
@@ -1951,7 +1951,7 @@ impl AttnLayerWeights {
  ) -> anyhow::Result<Self> {
  let deq = |role: &str| -> anyhow::Result<Vec<f32>> {
  let h = view.require(role)?;
- views.dequant_f32_simple(h)
+ src.dequant_f32(h)
  };
  // DS4_COMPRESSOR_F16 (default on) gates ALL the no-copy f16 weight paths
  // (compressor kv/gate, indexer scoring, hc projections); =0 reverts to
@@ -1976,7 +1976,7 @@ impl AttnLayerWeights {
  if comp_f16_on {
  if let Some(h) = view.handles.get(role) {
  if h.ttype == crate::gguf::GgmlType::F16 {
- let s_owned = views.bytes_for(h)?;
+ let s_owned = src.bytes_for(h)?;
  let s: &[u8] = &s_owned;
  let s: &'static [u8] =
  unsafe { std::mem::transmute::<&[u8], &'static [u8]>(s) };
@@ -2035,7 +2035,7 @@ impl AttnLayerWeights {
  // Mmap struct doesn't remap the pages. MAP_SHARED + the no-copy
  // MTLBuffer keep the pages clean file-backed. Lifetime-extend to
  // 'static — a self-contained invariant, never escapes DecodeRunner.
- let s_owned = views.bytes_for(h)?;
+ let s_owned = src.bytes_for(h)?;
  let s: &[u8] = &s_owned;
  let s: &'static [u8] = unsafe { std::mem::transmute::<&[u8], &'static [u8]>(s) };
  // QUALITY PROBE (DS4_ATTN_Q4_PROBE): degrade the ATTENTION projection
@@ -2134,7 +2134,7 @@ impl AttnLayerWeights {
  // emits `attn_compressor_{kv,gate,ape,norm}` role names; absent on dense.
  let try_deq = |role: &str| -> anyhow::Result<Vec<f32>> {
  if let Some(h) = view.handles.get(role) {
- views.dequant_f32_simple(h)
+ src.dequant_f32(h)
  } else {
  Ok(Vec::new())
  }
