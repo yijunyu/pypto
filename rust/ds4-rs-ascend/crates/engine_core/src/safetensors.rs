@@ -378,7 +378,9 @@ pub fn dequant_w8a8(q: &[i8], scale: &[f32], offset: &[f32], rows: usize, cols: 
 pub struct Package {
     dir: std::path::PathBuf,
     shard_of: HashMap<String, String>,
-    open_shards: std::cell::RefCell<HashMap<String, std::rc::Rc<Shard>>>,
+    // Mutex, not RefCell: the dispatcher that will consume this holds its own `Mutex` fields and
+    // must stay `Sync`. A `Rc` inside a `RefCell` would make the whole engine non-`Send`.
+    open_shards: std::sync::Mutex<HashMap<String, std::sync::Arc<Shard>>>,
 }
 
 impl Package {
@@ -395,7 +397,7 @@ impl Package {
         Ok(Self {
             dir: dir.to_path_buf(),
             shard_of,
-            open_shards: std::cell::RefCell::new(HashMap::new()),
+            open_shards: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -411,18 +413,20 @@ impl Package {
     }
 
     /// The shard holding `name`, opened on first use and then reused.
-    pub fn shard_for(&self, name: &str) -> Result<std::rc::Rc<Shard>> {
+    pub fn shard_for(&self, name: &str) -> Result<std::sync::Arc<Shard>> {
         let file = self
             .shard_of
             .get(name)
-            .ok_or_else(|| anyhow!("no such tensor in the package: {name}"))?;
-        if let Some(s) = self.open_shards.borrow().get(file) {
+            .ok_or_else(|| anyhow!("no such tensor in the package: {name}"))?
+            .clone();
+        if let Some(s) = self.open_shards.lock().unwrap().get(&file) {
             return Ok(s.clone());
         }
-        let shard = std::rc::Rc::new(Shard::open(&self.dir.join(file))?);
+        let shard = std::sync::Arc::new(Shard::open(&self.dir.join(&file))?);
         self.open_shards
-            .borrow_mut()
-            .insert(file.clone(), shard.clone());
+            .lock()
+            .unwrap()
+            .insert(file, shard.clone());
         Ok(shard)
     }
 
