@@ -24,24 +24,25 @@ pub struct RoleTensor {
 /// One layer's roles, in the order the decoder asks for them.
 pub fn layer_roles(layer: usize) -> Vec<RoleTensor> {
     let l = layer;
+    // Both columns are FACT: the left from the decoder's own `deq("...")` calls, the right from
+    // the package's tensor list. They are almost entirely different vocabularies -- `mla_q_a` vs
+    // `attn.wq_a`, `moe_gate_shared` vs `ffn.shared_experts.w1` -- which is why this table exists
+    // and why it was built by running the decoder, not by reading either side alone.
     let mut v = vec![
         RoleTensor { role: "attn_norm", name: format!("layers.{l}.attn_norm.weight") },
         RoleTensor { role: "mla_q_a", name: format!("layers.{l}.attn.wq_a.weight") },
         RoleTensor { role: "mla_q_b", name: format!("layers.{l}.attn.wq_b.weight") },
         RoleTensor { role: "mla_kv", name: format!("layers.{l}.attn.wkv.weight") },
-        // The package's `q_norm`/`kv_norm` ARE the engine's `mla_q_a_norm`/`mla_kv_a_norm`;
-        // the names were read out of the package rather than guessed.
         RoleTensor { role: "mla_q_a_norm", name: format!("layers.{l}.attn.q_norm.weight") },
         RoleTensor { role: "mla_kv_a_norm", name: format!("layers.{l}.attn.kv_norm.weight") },
         RoleTensor { role: "attn_output_a", name: format!("layers.{l}.attn.wo_a.weight") },
         RoleTensor { role: "attn_output_b", name: format!("layers.{l}.attn.wo_b.weight") },
+        RoleTensor { role: "attn_sinks", name: format!("layers.{l}.attn.attn_sink") },
         RoleTensor { role: "ffn_norm", name: format!("layers.{l}.ffn_norm.weight") },
-        RoleTensor { role: "ffn_gate_inp", name: format!("layers.{l}.ffn.gate.weight") },
-        RoleTensor { role: "ffn_gate_shexp", name: format!("layers.{l}.ffn.shared_experts.w1.weight") },
-        RoleTensor { role: "ffn_down_shexp", name: format!("layers.{l}.ffn.shared_experts.w2.weight") },
-        RoleTensor { role: "ffn_up_shexp", name: format!("layers.{l}.ffn.shared_experts.w3.weight") },
-        // The "HC" bound-and-collapse tensors. The decoder requires `hc_attn_fn` on every layer;
-        // the first attempt at this map omitted them and the engine said so by name.
+        RoleTensor { role: "moe_routing_table", name: format!("layers.{l}.ffn.gate.weight") },
+        RoleTensor { role: "moe_gate_shared", name: format!("layers.{l}.ffn.shared_experts.w1.weight") },
+        RoleTensor { role: "moe_down_shared", name: format!("layers.{l}.ffn.shared_experts.w2.weight") },
+        RoleTensor { role: "moe_up_shared", name: format!("layers.{l}.ffn.shared_experts.w3.weight") },
         RoleTensor { role: "hc_attn_fn", name: format!("layers.{l}.hc_attn_fn") },
         RoleTensor { role: "hc_attn_base", name: format!("layers.{l}.hc_attn_base") },
         RoleTensor { role: "hc_attn_scale", name: format!("layers.{l}.hc_attn_scale") },
