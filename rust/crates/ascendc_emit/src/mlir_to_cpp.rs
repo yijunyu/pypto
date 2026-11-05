@@ -8059,7 +8059,7 @@ fn generate_vector_compute_code(
                                 buf_sizes.insert(pr, nb(k_expr.clone()));
                                 let rw = buf_counter;
                                 buf_counter += 1;
-                                buf_sizes.insert(rw, nb(format!("({}) / 2", k_expr)));
+                                buf_sizes.insert(rw, nb(k_expr.clone()));
                                 let cell = buf_counter;
                                 buf_counter += 1;
                                 buf_sizes.insert(cell, "8".to_string());

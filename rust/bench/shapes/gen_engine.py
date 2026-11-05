@@ -93,6 +93,42 @@ def rope_halves(slot, width, half):
     )
 
 
+# The engine's quantised projections, served by the CERTIFIED w8a8 kernel.
+# `q8mv_kernel_for(d_in, d_out)` in engine_ascend::device launches one row of d_out per slot;
+# the deployment package stores them as I8 [d_out, d_in] with a per-output-channel scale.
+# Shapes are the engine's own, so these rows serve the slots rather than approximating them.
+# Named `proj_*` to match the corpus's existing projection rows: the coverage reader
+# identifies a candidate by the KIND token in its stem (`proj`) and then by the extent the
+# .tile actually declares, so a row named for the engine slot instead of the kind would
+# never be considered however correct it is.
+W8A8_MV = [
+    ("proj_w8a8_engine_1x1024_k4096", 4096, 1024),
+    ("proj_w8a8_engine_1x32768_k1024", 1024, 32768),
+    ("proj_w8a8_engine_1x512_k4096", 4096, 512),
+    ("proj_w8a8_engine_1x4096_k8192", 8192, 4096),
+]
+
+
+def w8a8_mv(slot, k, n):
+    body = (
+        c("r", 1)
+        + c("kk", k)
+        + c("nn", n)
+        + '    %z = llvm.mlir.constant(0 : i32) : i32\n'
+        f'    %x = llvm.call @__tile_load_f32(%xbuf, %r, %kk) : (!llvm.ptr<1>, i32, i32) -> i32\n'
+        f'    %res = llvm.call @__tile_matvec_w8a8_f32(%w, %sc, %of, %x, %z, %nn, %kk) : '
+        f'(!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32) -> i32\n'
+        f'    llvm.call @__tile_store_f32(%o, %res, %r, %nn) : (!llvm.ptr<1>, i32, i32, i32) -> ()\n'
+    )
+    return (
+        "// Engine slot (ds4-rs-ascend): W8A8 matvec, int8 weights with a per-output-channel\n"
+        "// scale/offset. Ascend-native deployment quantisation.\n"
+        "module {\n  llvm.func @" + slot + "(%xbuf: !llvm.ptr<1>, %w: !llvm.ptr<1>, "
+        "%sc: !llvm.ptr<1>, %of: !llvm.ptr<1>, %o: !llvm.ptr<1>) attributes {hacc.entry} {\n"
+        + body + "    llvm.return\n  }\n}\n"
+    )
+
+
 def kernels():
     out = {}
     for slot, n in SLOTS:
@@ -105,6 +141,8 @@ def kernels():
             f'    llvm.call @__tile_store_f32(%arg1, %o, %r, %cl) : (!llvm.ptr<1>, i32, i32, i32) -> ()'
         )
         out[f"rmsnorm_engine_1x{n}"] = mod(f"engine_rmsnorm_1_{n}", body)
+    for slot, k, n in W8A8_MV:
+        out[slot] = w8a8_mv(slot, k, n)
     slot, width, half = ROPE_HALVES
     out[slot] = rope_halves(slot, width, half)
     return out

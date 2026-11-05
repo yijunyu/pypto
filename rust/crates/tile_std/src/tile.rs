@@ -979,6 +979,40 @@ extern "C" {
     /// Used by projections when weights haven't been cast to f16/bf16.
     pub fn __tile_matvec_f32(dst: u32, a: u32, b: u32, rows: u32, cols: u32) -> u32;
 
+    /// DS4 engine projection, w8a8: `y[i] = sum_k (W8[i,k] - off[i]) * sc[i] * a[k]`.
+    ///
+    /// `w` is the int8 weight's GM POINTER and is never staged whole -- the row loop
+    /// copies one row at a time, which is what lets a 4096-wide projection run inside the
+    /// 188 KB buffer. `sc`/`off` are per-OUTPUT-CHANNEL f32 pointers into GM.
+    pub fn __tile_matvec_w8a8_f32(
+        w: *const i8,
+        sc: *const f32,
+        off: *const f32,
+        a: u32,
+        dst: u32,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+
+    /// Streaming f32 matvec: the weight's GM POINTER, one row resident at a time.
+    /// The f32 sibling of `__tile_matvec_w8a8_f32` and the first half of the q8 path.
+    pub fn __tile_matvec_gm_f32(
+        w: *const f32,
+        a: u32,
+        dst: u32,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+
+    /// Q8_0 streaming matvec: 34-byte blocks (half scale + 32 int8), read from GM.
+    pub fn __tile_matvec_q8_0_gm_f32(
+        w: *const u8,
+        a: u32,
+        dst: u32,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+
     /// Quantised-weight matvecs — the decode dense projections. The weight is a
     /// raw GGUF-layout block buffer (Q8_0 / Q2_K / IQ2_XXS), not a tile buf_id,
     /// so it is passed as a raw device pointer alongside the f32 activation and

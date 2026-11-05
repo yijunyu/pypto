@@ -5,11 +5,11 @@
  "shapes_source": "rust/ds4-rs-ascend/crates/engine_ascend/src/device.rs LAYER0_KERNELS",
  "generator": "shapes/gen_engine.py",
  "totals": {
-  "kernels": 4,
-  "tile": 4,
+  "kernels": 8,
+  "tile": 8,
   "pto": 2,
-  "ascendc": 4,
-  "device_verified": 4
+  "ascendc": 8,
+  "device_verified": 7
  },
  "kernels": {
   "rmsnorm_engine_1x512": {
@@ -59,6 +59,59 @@
     "time_ms": 0.024601,
     "repeat": 20,
     "tolerance": 1e-06
+   }
+  },
+  "proj_w8a8_engine_1x1024_k4096": {
+   "tile": "tile/proj_w8a8_engine_1x1024_k4096.tile",
+   "pto": null,
+   "ascendc": "ascendc/proj_w8a8_engine_1x1024_k4096.cpp",
+   "device_check": "PASS 2026-11-05 on 910B2 (opencompass-01), 3 launches: wrong=0, backward relative error 1.398e-07 against an f64 oracle, tolerance 1e-6; 0.602790 ms per launch after discarding the first. w8a8: int8 weights, per-output-channel scale/offset, (1024 outputs x 4096 contraction). This is the engine's projection slot served by the deployment quantisation.",
+   "device_metrics": {
+    "backward_rel": 1.398e-07,
+    "time_ms": 0.60279,
+    "repeat": 3,
+    "tolerance": 1e-06,
+    "n": 1024,
+    "k": 4096
+   }
+  },
+  "proj_w8a8_engine_1x512_k4096": {
+   "tile": "tile/proj_w8a8_engine_1x512_k4096.tile",
+   "pto": null,
+   "ascendc": "ascendc/proj_w8a8_engine_1x512_k4096.cpp",
+   "device_check": "PASS 2026-11-05 on 910B2 (opencompass-01), 3 launches: wrong=0, backward relative error 1.411e-07 against an f64 oracle, tolerance 1e-6; 0.307880 ms per launch after discarding the first. w8a8: int8 weights, per-output-channel scale/offset, (512 outputs x 4096 contraction). This is the engine's projection slot served by the deployment quantisation.",
+   "device_metrics": {
+    "backward_rel": 1.411e-07,
+    "time_ms": 0.30788,
+    "repeat": 3,
+    "tolerance": 1e-06,
+    "n": 512,
+    "k": 4096
+   }
+  },
+  "proj_w8a8_engine_1x32768_k1024": {
+   "tile": "tile/proj_w8a8_engine_1x32768_k1024.tile",
+   "pto": null,
+   "ascendc": "ascendc/proj_w8a8_engine_1x32768_k1024.cpp",
+   "device_check": "PASS 2026-11-05 on 910B2 (opencompass-01), 3 launches: wrong=0, backward relative error 1.309e-07 against an f64 oracle, tolerance 1e-6; 10.097850 ms per launch after discarding the first. w8a8: int8 weights, per-output-channel scale/offset, (32768 outputs x 1024 contraction). This is the engine's projection slot served by the deployment quantisation.",
+   "device_metrics": {
+    "backward_rel": 1.309e-07,
+    "time_ms": 10.09785,
+    "repeat": 3,
+    "tolerance": 1e-06,
+    "n": 32768,
+    "k": 1024
+   }
+  },
+  "proj_w8a8_engine_1x4096_k8192": {
+   "tile": "tile/proj_w8a8_engine_1x4096_k8192.tile",
+   "pto": null,
+   "ascendc": "ascendc/proj_w8a8_engine_1x4096_k8192.cpp",
+   "device_check": "FAIL 2026-11-05 on 910B2: 25 of 4096 outputs are +inf (max_abs/max_rel inf) with k=8192. Not a work-buffer shortage -- a full-width reduce work buffer changed nothing. The same kernel is correct at k=4096 and k=1024, so this is a width-specific fault, recorded rather than worked around.",
+   "device_metrics": {
+    "wrong": 25,
+    "n": 4096,
+    "k": 8192
    }
   }
  }
