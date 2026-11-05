@@ -143,6 +143,42 @@ impl<'a> PackageSource<'a> {
         Ok(self.pkg.raw(&name)?.1)
     }
 
+    /// One routed expert plane as RAW int8 bytes plus the per-output-channel scale and offset,
+    /// i.e. exactly the three arguments the certified `__tile_matvec_w8a8_f32` kernel takes.
+    ///
+    /// This is the accessor the MoE path needs: 0.604 GB of f32 per token is avoided entirely by
+    /// handing the device the bytes and letting it dequantise per row.
+    pub fn raw_expert(
+        &self,
+        layer: usize,
+        expert: usize,
+        plane: u8,
+    ) -> Result<(Vec<u8>, Vec<f32>, Vec<f32>)> {
+        let role = match plane {
+            1 => "ffn_gate_exps",
+            2 => "ffn_down_exps",
+            3 => "ffn_up_exps",
+            _ => bail!("expert plane must be 1, 2 or 3"),
+        };
+        let e = expert_roles(layer, expert)
+            .into_iter()
+            .find(|r| r.role == role)
+            .ok_or_else(|| anyhow!("layer {layer}: no expert role {role}"))?;
+        let t = self.pkg.tensor(&e.name)?;
+        if t.dtype != Dtype::I8 {
+            bail!("{}: expected I8 for a w8a8 weight, got {:?}", e.name, t.dtype);
+        }
+        let (_, bytes) = self.pkg.raw(&e.name)?;
+        // Scale and offset are companions of the same tensor; a missing offset means ZERO, which
+        // is what the symmetric exports mean by omitting it.
+        let scale = self.pkg.f32_tensor(&format!("{}_scale", e.name))?;
+        let offset = self
+            .pkg
+            .f32_tensor(&format!("{}_offset", e.name))
+            .unwrap_or_else(|_| vec![0.0; t.shape.first().copied().unwrap_or(1) as usize]);
+        Ok((bytes, scale, offset))
+    }
+
     /// One routed expert plane: `plane` is 1, 2 or 3 (`w1` gate, `w2` down, `w3` up).
     pub fn dequant_expert(&self, layer: usize, expert: usize, plane: u8) -> Result<Vec<f32>> {
         let role = match plane {

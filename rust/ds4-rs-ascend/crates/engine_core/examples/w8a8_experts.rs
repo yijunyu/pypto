@@ -63,5 +63,26 @@ fn main() -> anyhow::Result<()> {
          stacked form cannot exist on this box at all.",
         stacked_bytes as f64 / bytes as f64
     );
+
+    // The same token's experts as RAW BYTES + per-channel scale/offset: exactly the three
+    // arguments the certified kernel takes. The host never builds the f32 plane.
+    let t1 = std::time::Instant::now();
+    let mut raw_bytes = 0usize;
+    let mut scales = 0usize;
+    for e in 0..top_k {
+        for plane in 1..=3u8 {
+            let (q, sc, off) = src.raw_expert(layer, e, plane)?;
+            raw_bytes += q.len();
+            scales += (sc.len() + off.len()) * 4;
+        }
+    }
+    let dt1 = t1.elapsed();
+    println!(
+        "  RAW path: {:.3} GB of int8 + {:.1} MB of scale/offset, in {:.3} s  ({:.0}x faster than dequantising)",
+        raw_bytes as f64 / 1e9,
+        scales as f64 / 1e6,
+        dt1.as_secs_f64(),
+        dt.as_secs_f64() / dt1.as_secs_f64().max(1e-9)
+    );
     Ok(())
 }
