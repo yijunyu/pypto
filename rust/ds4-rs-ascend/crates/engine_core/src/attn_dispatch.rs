@@ -212,10 +212,24 @@ impl LayerParams {
  );
  }
  let n_rot = meta_u32(g, &["deepseek4.rope.dimension_count"]).unwrap_or(defaults.n_rot);
- let n_lora_q =
- meta_u32(g, &["deepseek4.attention.q_lora_rank"]).unwrap_or(defaults.n_lora_q);
- let n_lora_kv =
- meta_u32(g, &["deepseek4.attention.kv_lora_rank"]).unwrap_or(defaults.n_lora_kv);
+ // The LoRA ranks are read from the TENSORS, not only from metadata. V4.1 carries no
+ // `q_lora_rank` key at all and its rank is 1280 where V4 Flash's is 1024, so a metadata
+ // read fell back to the default and every projection then asserted on a 1280-row weight
+ // ("matvec dims: W has 1024 rows of 5120"). A GGUF row count cannot disagree with the
+ // weights it describes, so it is the authoritative source and metadata is the fallback.
+ let rank_of = |suffix: &str| -> Option<u32> {
+ g.tensors
+ .iter()
+ .find(|t| t.name.ends_with(suffix))
+ .and_then(|t| t.dims.get(1).copied())
+ .map(|v| v as u32)
+ };
+ let n_lora_q = rank_of("attn_q_a.weight")
+ .or_else(|| meta_u32(g, &["deepseek4.attention.q_lora_rank"]))
+ .unwrap_or(defaults.n_lora_q);
+ let n_lora_kv = rank_of("attn_kv.weight")
+ .or_else(|| meta_u32(g, &["deepseek4.attention.kv_lora_rank"]))
+ .unwrap_or(defaults.n_lora_kv);
  let rope_freq_base = meta_f32(g, &["deepseek4.rope.freq_base", "deepseek2.rope.freq_base"])
  .unwrap_or(defaults.rope_freq_base);
  let rope_freq_scale = meta_f32(g, &["deepseek4.rope.scaling.factor"])
