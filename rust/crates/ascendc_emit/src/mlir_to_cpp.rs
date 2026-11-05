@@ -242,6 +242,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_gate_up_silu_f16",
     "__tile_matvec_f16",
     "__tile_matvec_f32",
+    "__tile_matvec_gm_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1533,6 +1534,13 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         if line.contains("@__tile_div_f32") {
             vec_buf_count += 1;
             has_binary_ops = true;
+        }
+        if line.contains("@__tile_matvec_gm_f32") {
+            // w row (k), product (k), reduce work (k/2), cell (8), out (n). FIVE, not the
+            // three the first version said: the declarations are generated from this count
+            // and the arm allocated two more than it, so the kernel referenced buf4/buf5
+            // without declaring them.
+            vec_buf_count += 5;
         }
         if line.contains("@__tile_matvec_f32") || line.contains("@__tile_matvec_f16") {
             vec_buf_count += 4;
@@ -7982,6 +7990,93 @@ fn generate_vector_compute_code(
                                 cpp_type: "uint32_t".to_string(),
                             },
                         );
+                    }
+                }
+                continue;
+            }
+
+            // --- __tile_matvec_gm_f32: y[i] = sum_j a[j] * W[i, j], W STREAMED ---
+            //
+            // The difference from `__tile_matvec_f32` is where the weight lives. That one
+            // takes a weight ALREADY LOADED into one tile, so its size is n*k elements --
+            // 16 MB at 4096x1024, which is why the projection slots refused. This arm takes
+            // the weight's GM pointer and copies ONE ROW at a time inside the row loop, so
+            // only k elements are ever resident.
+            //
+            // It is the first half of the streaming matvec the campaign needs; the second
+            // half is the same loop with q8_0 dequantisation inside it.
+            if line.contains("@__tile_matvec_gm_f32") {
+                if let Some(result) = extract_result(line) {
+                    let a = extract_call_args(line);
+                    if a.len() >= 5 {
+                        let w_arg = a[0].trim().to_string();
+                        let x = resolve_buf_index(&a[1], &ssa_to_buf, &values);
+                        let n_expr = resolve_value(&a[3], &values);
+                        let k_expr = resolve_value(&a[4], &values);
+                        let widx = analysis
+                            .gm_args
+                            .iter()
+                            .position(|(_, name)| {
+                                name == &w_arg || format!("%{name}") == w_arg
+                            });
+                        match widx {
+                            Some(wi) => {
+                                let nb = |sz: String| format!("(({}) + 7) / 8 * 8", sz);
+                                let wbuf = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(wbuf, nb(k_expr.clone()));
+                                let prod = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(prod, nb(k_expr.clone()));
+                                let rwork = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(rwork, nb(format!("({}) / 2", k_expr)));
+                                let cell = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(cell, "8".to_string());
+                                let out = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(out, nb(n_expr.clone()));
+                                writeln!(
+                                    code,
+                                    r#"{{ // tile_matvec_gm: y[i] = sum_j a[j] * W[i, j], one weight row resident
+  int __mv_n = ({n}); int __mv_k = ({k});
+  for (int __i = 0; __i < __mv_n; ++__i) {{
+    AscendC::DataCopy(buf{w}, gm{wi}Tensor[__i * __mv_k], __mv_k);
+    AscendC::PipeBarrier<PIPE_ALL>();
+    AscendC::Mul(buf{p}, buf{x}, buf{w}, __mv_k);
+    AscendC::PipeBarrier<PIPE_V>();
+    AscendC::ReduceSum(buf{c}, buf{p}, buf{r}, __mv_k);
+    AscendC::PipeBarrier<PIPE_ALL>();
+    buf{o}.SetValue(__i, buf{c}.GetValue(0));
+  }}
+}}"#,
+                                    n = n_expr,
+                                    k = k_expr,
+                                    wi = wi,
+                                    w = wbuf,
+                                    p = prod,
+                                    x = x,
+                                    c = cell,
+                                    r = rwork,
+                                    o = out
+                                )
+                                .unwrap();
+                                vec_dirty_bufs.insert(out);
+                                vec_compute_dst_bufs.insert(out);
+                                ssa_to_buf.insert(result.clone(), out);
+                                values.insert(
+                                    result,
+                                    CppValue { expr: format!("{out}"), cpp_type: "uint32_t".to_string() },
+                                );
+                            }
+                            None => {
+                                return Err(format!(
+                                    "`__tile_matvec_gm_f32` weight operand {w_arg} is not one of the \
+                                     kernel's GM arguments"
+                                ));
+                            }
+                        }
                     }
                 }
                 continue;
