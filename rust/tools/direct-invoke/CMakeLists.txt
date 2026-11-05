@@ -43,6 +43,8 @@ set(KERNEL_DO "vec_add_do" CACHE STRING "launcher symbol")
 set(KERNEL_N "256" CACHE STRING "elements processed")
 set(KERNEL_ARGS "3" CACHE STRING "GM arguments the launcher takes")
 set(KERNEL_REPEAT "1" CACHE STRING "launches to time; 1 disables timing")
+set(MV_N "64" CACHE STRING "matvec oracle: output rows")
+set(MV_K "256" CACHE STRING "matvec oracle: contraction width")
 set(ORACLE "0" CACHE STRING "0 sum, 1 rmsnorm, 2 matvec")
 set(RMS_EPS "1e-5f" CACHE STRING "epsilon the kernel bakes in")
 set(TOLERANCE "1e-6" CACHE STRING "relative tolerance")
@@ -51,6 +53,8 @@ target_compile_definitions(vec_add_run PRIVATE
     KERNEL_N=${KERNEL_N}
     KERNEL_ARGS=${KERNEL_ARGS}
     KERNEL_REPEAT=${KERNEL_REPEAT}
+    MV_N=${MV_N}
+    MV_K=${MV_K}
     ORACLE=${ORACLE}
     RMS_EPS=${RMS_EPS}
     TOLERANCE=${TOLERANCE}

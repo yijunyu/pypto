@@ -31,6 +31,10 @@ tol="${8:-1e-6}"
 # Launches to time. 1 (the default) keeps a correctness run unchanged and pays
 # nothing; above 1 the launcher prints TIME_MS and discards the first launch.
 repeat="${9:-1}"
+# The matvec oracle's own shape (outputs, contraction width). It cannot be inferred
+# from `n`: for a quantised matvec `n` has to cover the RAW BYTE size of the weights.
+mv_n="${10:-64}"
+mv_k="${11:-256}"
 
 mkdir -p "${here}/op_kernel"
 cp "${kernel}" "${here}/op_kernel/vec_add_kernel.asc"
@@ -45,7 +49,7 @@ cmake -S "${here}" -B "${here}/build" \
     -DASC_DIR="${ASCEND_HOME_PATH}/x86_64-linux/lib64/cmake" \
     -DCMAKE_BUILD_TYPE=Release \
     -DKERNEL_DO="${launcher}" -DKERNEL_N="${elements}" \
-    -DKERNEL_ARGS="${arity}" -DORACLE="${oracle}" -DRMS_EPS="${eps}" -DTOLERANCE="${tol}f" -DKERNEL_REPEAT="${repeat}" >/dev/null
+    -DKERNEL_ARGS="${arity}" -DORACLE="${oracle}" -DRMS_EPS="${eps}" -DTOLERANCE="${tol}f" -DKERNEL_REPEAT="${repeat}" -DMV_N="${mv_n}" -DMV_K="${mv_k}" >/dev/null
 cmake --build "${here}/build" --target vec_add_run -j 4 2>&1 | grep -E "error|Error" || true
 
 "${here}/build/vec_add_run"

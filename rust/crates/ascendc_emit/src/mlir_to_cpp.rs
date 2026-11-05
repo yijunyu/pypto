@@ -243,6 +243,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_matvec_f16",
     "__tile_matvec_f32",
     "__tile_matvec_gm_f32",
+    "__tile_matvec_q8_0_gm_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1534,6 +1535,11 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         if line.contains("@__tile_div_f32") {
             vec_buf_count += 1;
             has_binary_ops = true;
+        }
+        if line.contains("@__tile_matvec_q8_0_gm_f32") {
+            // x (k) comes from the load's buffer, out (n) is this arm's only allocation.
+            // The weight is read from GM as raw q8_0 bytes, so it needs no buffer at all.
+            vec_buf_count += 1;
         }
         if line.contains("@__tile_matvec_gm_f32") {
             // w row (k), product (k), reduce work (k/2), cell (8), out (n). FIVE, not the
@@ -7990,6 +7996,83 @@ fn generate_vector_compute_code(
                                 cpp_type: "uint32_t".to_string(),
                             },
                         );
+                    }
+                }
+                continue;
+            }
+
+            // --- __tile_matvec_q8_0_gm_f32: y[i] = sum_k a[k] * dequant(W[i, k]) ---
+            //
+            // The engine's projection slots carry Q8_0 weights: blocks of 34 bytes, a
+            // 2-byte half scale followed by 32 signed int8. The dequantisation here is a
+            // SCALAR loop -- correct first, fast later -- because a vectorised block
+            // dequant is a separate optimisation and this is the version whose arithmetic
+            // can be checked against an f64 oracle in one run.
+            if line.contains("@__tile_matvec_q8_0_gm_f32") {
+                if let Some(result) = extract_result(line) {
+                    let a = extract_call_args(line);
+                    if a.len() >= 5 {
+                        let w_arg = a[0].trim().to_string();
+                        let x = resolve_buf_index(&a[1], &ssa_to_buf, &values);
+                        let n_expr = resolve_value(&a[3], &values);
+                        let k_expr = resolve_value(&a[4], &values);
+                        let widx = analysis
+                            .gm_args
+                            .iter()
+                            .position(|(_, name)| name == &w_arg || format!("%{name}") == w_arg);
+                        match widx {
+                            Some(wi) => {
+                                let out = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(out, format!("(({}) + 7) / 8 * 8", n_expr));
+                                writeln!(
+                                    code,
+                                    r#"{{ // tile_matvec_q8_0_gm: y[i] = sum_k a[k] * (q8_0 dequant)
+  int __n = ({n}); int __k = ({k});
+  const int __nb = __k / 32;                 // q8_0 blocks per row
+  for (int __i = 0; __i < __n; ++__i) {{
+    float __acc = 0.0f;
+    for (int __b = 0; __b < __nb; ++__b) {{
+      const __gm__ unsigned char *__p =
+          (const __gm__ unsigned char *)gm{wi}Tensor.GetPhyAddr()
+          + ((size_t)__i * __nb + __b) * 34;
+      // The scale is a half; read it as one and let the compiler convert. Bit-twiddling
+      // was the first version and AscendC refused it: a cast between a floating and an
+      // unsigned integer is not allowed in an aicore function.
+      const __gm__ half *__hp = (const __gm__ half *)__p;
+      const float __scale = (float)(*__hp);
+      const __gm__ signed char *__qp = (const __gm__ signed char *)(__p + 2);
+      for (int __q = 0; __q < 32; ++__q) {{
+        const float __qv = (float)__qp[__q];
+        const int __idx = __b * 32 + __q;
+        __acc += buf{x}.GetValue(__idx) * (__qv * __scale);
+      }}
+    }}
+    buf{o}.SetValue(__i, __acc);
+  }}
+}}"#,
+                                    n = n_expr,
+                                    k = k_expr,
+                                    wi = wi,
+                                    x = x,
+                                    o = out
+                                )
+                                .unwrap();
+                                vec_dirty_bufs.insert(out);
+                                vec_compute_dst_bufs.insert(out);
+                                ssa_to_buf.insert(result.clone(), out);
+                                values.insert(
+                                    result,
+                                    CppValue { expr: format!("{out}"), cpp_type: "uint32_t".to_string() },
+                                );
+                            }
+                            None => {
+                                return Err(format!(
+                                    "`__tile_matvec_q8_0_gm_f32` weight operand {w_arg} is not one \
+                                     of the kernel's GM arguments"
+                                ));
+                            }
+                        }
                     }
                 }
                 continue;
