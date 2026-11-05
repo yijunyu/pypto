@@ -1,15 +1,15 @@
 {
  "corpus": "engine",
  "status": "generated",
- "what": "The kernels the Rust serving engine (ds4-rs-ascend) launches, at the shapes it launches them. Separate from the model corpora because these rows exist for an ENGINE SLOT, not for a model block: rms_norm_512 is here because LAYER0_KERNELS launches it, not because any model has a 512-wide normalisation.",
+ "what": "The kernels the Rust serving engine (ds4-rs-ascend) launches, at the shapes it launches them. Separate from the model corpora because these rows exist for an ENGINE SLOT, not for a model block: rms_norm_512 is here because LAYER0_KERNELS launches it, not because any model has a 512-wide normalisation. The rope row is the engine's `ds4_rope_halves`: 64-wide input split into two 32 halves, one 64-wide output written as two halves -- the shape and formula are the layer0 fixture's.",
  "shapes_source": "rust/ds4-rs-ascend/crates/engine_ascend/src/device.rs LAYER0_KERNELS",
  "generator": "shapes/gen_engine.py",
  "totals": {
-  "kernels": 2,
-  "tile": 2,
+  "kernels": 3,
+  "tile": 3,
   "pto": 2,
-  "ascendc": 2,
-  "device_verified": 2
+  "ascendc": 3,
+  "device_verified": 3
  },
  "kernels": {
   "rmsnorm_engine_1x512": {
@@ -32,6 +32,18 @@
    "device_metrics": {
     "max_rel": 5.866e-08,
     "time_ms": 0.016993,
+    "repeat": 20,
+    "tolerance": 1e-06
+   }
+  },
+  "rope_halves_engine_1x64": {
+   "tile": "tile/rope_halves_engine_1x64.tile",
+   "pto": null,
+   "ascendc": "ascendc/rope_halves_engine_1x64.cpp",
+   "device_check": "PASS 2026-11-05 on 910B2 (opencompass-01), 20 launches: wrong=0, max_rel=6.001e-07 against an f64 rope-over-halves oracle, tolerance 1e-6; 0.016756 ms per launch after discarding the first. Formula and chain from the layer0 fixture.",
+   "device_metrics": {
+    "max_rel": 6.001e-07,
+    "time_ms": 0.016756,
     "repeat": 20,
     "tolerance": 1e-06
    }

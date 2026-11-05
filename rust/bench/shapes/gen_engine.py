@@ -52,6 +52,42 @@ def mod(name, body):
     )
 
 
+# The engine's `rope_halves`: 64-wide x split into two 32 halves, one 64-wide output
+# written as two halves. The chain and the formula are the fixture's
+# (ptoas_rs/tests/fixtures/barrier/layer0.pto:364).
+ROPE_HALVES = ("rope_halves_engine_1x64", 64, 32)
+
+
+def rope_halves(slot, width, half):
+    body = (
+        c("r", 1)
+        + c("cw", width)
+        + c("ch", half)
+        + f'    %lo = llvm.call @__tile_load_f32(%x, %r, %ch) : (!llvm.ptr<1>, i32, i32) -> i32\n'
+        f'    %hop = llvm.getelementptr inbounds %x[%ch] : (!llvm.ptr<1>, i32) -> !llvm.ptr<1>\n'
+        f'    %hi = llvm.call @__tile_load_f32(%hop, %r, %ch) : (!llvm.ptr<1>, i32, i32) -> i32\n'
+        f'    %cos = llvm.call @__tile_load_f32(%cs, %r, %ch) : (!llvm.ptr<1>, i32, i32) -> i32\n'
+        f'    %sin = llvm.call @__tile_load_f32(%sn, %r, %ch) : (!llvm.ptr<1>, i32, i32) -> i32\n'
+        f'    %z = llvm.mlir.constant(0 : i32) : i32\n'
+        f'    %t1 = llvm.call @__tile_mul_f32(%z, %lo, %cos, %r, %ch) : (i32, i32, i32, i32, i32) -> i32\n'
+        f'    %t2 = llvm.call @__tile_mul_f32(%z, %hi, %sin, %r, %ch) : (i32, i32, i32, i32, i32) -> i32\n'
+        f'    %ol = llvm.call @__tile_sub_f32(%z, %t1, %t2, %r, %ch) : (i32, i32, i32, i32, i32) -> i32\n'
+        f'    %t3 = llvm.call @__tile_mul_f32(%z, %hi, %cos, %r, %ch) : (i32, i32, i32, i32, i32) -> i32\n'
+        f'    %t4 = llvm.call @__tile_mul_f32(%z, %lo, %sin, %r, %ch) : (i32, i32, i32, i32, i32) -> i32\n'
+        f'    %oh = llvm.call @__tile_add_f32(%z, %t3, %t4, %r, %ch) : (i32, i32, i32, i32, i32) -> i32\n'
+        f'    llvm.call @__tile_store_f32(%o, %ol, %r, %ch) : (!llvm.ptr<1>, i32, i32, i32) -> ()\n'
+        f'    %oop = llvm.getelementptr inbounds %o[%ch] : (!llvm.ptr<1>, i32) -> !llvm.ptr<1>\n'
+        f'    llvm.call @__tile_store_f32(%oop, %oh, %r, %ch) : (!llvm.ptr<1>, i32, i32, i32) -> ()\n'
+    )
+    return (
+        "// Engine slot (ds4-rs-ascend): rope over halves, 4 inputs -> 1 output written\n"
+        "// as two 32-element halves. Formula and chain from the layer0 fixture.\n"
+        "module {\n  llvm.func @" + slot + "(%x: !llvm.ptr<1>, %cs: !llvm.ptr<1>, "
+        "%sn: !llvm.ptr<1>, %o: !llvm.ptr<1>) attributes {hacc.entry} {\n" + body +
+        "    llvm.return\n  }\n}\n"
+    )
+
+
 def kernels():
     out = {}
     for slot, n in SLOTS:
@@ -64,6 +100,8 @@ def kernels():
             f'    llvm.call @__tile_store_f32(%arg1, %o, %r, %cl) : (!llvm.ptr<1>, i32, i32, i32) -> ()'
         )
         out[f"rmsnorm_engine_1x{n}"] = mod(f"engine_rmsnorm_1_{n}", body)
+    slot, width, half = ROPE_HALVES
+    out[slot] = rope_halves(slot, width, half)
     return out
 
 
