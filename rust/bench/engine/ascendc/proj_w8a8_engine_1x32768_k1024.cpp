@@ -60,15 +60,23 @@ public:
         AscendC::DataCopy(buf0, gm0Tensor, (1) * (1024));
         { // tile_matvec_w8a8: y[i] = sum_k a[k] * ((q - off[i]) * sc[i])
           int __n = (__v2); int __k = (__v1);
+          // The V->MTE2 flag is PRIMED before the loop. A WaitFlag with no preceding SetFlag blocks
+          // on the first iteration and the kernel never starts -- which is exactly what the first
+          // attempt at this fix did.
+          AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
           for (int __i = 0; __i < __n; ++__i) {
+            // THREE dependencies, not two. MTE2->V orders the copy-in before the cast, V->S orders
+            // the reduction before the scalar readback -- and V->MTE2 orders the NEXT row's copy
+            // against THIS row's cast, which is a write-after-read hazard on buf_w8. Without it the
+            // DMA of row i+1 may land while row i's cast is still reading, which corrupts a subset
+            // of the outputs; it went unnoticed at k=1024/4096 and produced 25 +inf of 4096 at
+            // k=8192, where the cast is long enough for the race to be hit.
+            AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
             AscendC::DataCopy(buf1, gm1Tensor[__i * __k], __k);
-            // PRECISE EVENTS, NOT PIPE_ALL. A full drain after every DMA and every reduction is
-            // 2 x n drains for an n-row matvec, and at n=1024 that did not finish in 25 minutes
-            // (100% CPU spinning in the stream sync). These are the two dependencies that
-            // actually exist: MTE2->V after the copy in, and V->S before the scalar readback.
             AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
             AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
             AscendC::Cast(buf2, buf1, AscendC::RoundMode::CAST_NONE, __k);
+            AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
             AscendC::PipeBarrier<PIPE_V>();
             AscendC::Cast(buf3, buf2, AscendC::RoundMode::CAST_NONE, __k);
             AscendC::PipeBarrier<PIPE_V>();
