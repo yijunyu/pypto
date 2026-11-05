@@ -43,6 +43,7 @@ pub mod engram;
 #[path = "gguf.rs"]
 pub mod gguf;
 pub mod safetensors;
+pub mod w8a8_roles;
 
 /// Value-aware DS4_* boolean flag parsing. `DS4_X=0` must DISABLE — see the module docs
 /// for the presence-only bug this exists to prevent.

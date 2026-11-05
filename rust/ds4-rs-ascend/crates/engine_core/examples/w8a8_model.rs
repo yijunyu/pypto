@@ -138,5 +138,37 @@ fn main() -> anyhow::Result<()> {
     if !wrong_dtype.is_empty() {
         println!("dtype surprises: {wrong_dtype:?}");
     }
+
+    // The ROLE MAP, against the real package: every role the decoder asks for must resolve, for
+    // every layer. This is the check that the builder's naming table is right, and it is a
+    // different question from "the tensor exists" -- it is "the role means this tensor".
+    let mut role_fail = 0usize;
+    for l in 0..n_layers {
+        match engine_core::w8a8_roles::resolve_layer(&pkg, l) {
+            Ok(roles) => {
+                if l == 0 {
+                    for (r, t) in &roles {
+                        println!(
+                            "  role {:<16} -> {:<42} {:?} {:?}",
+                            r.role, r.name, t.dtype, t.shape
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                role_fail += 1;
+                if role_fail == 1 {
+                    println!("  role map FAILED on layer {l}: {e}");
+                }
+            }
+        }
+    }
+    for e in engine_core::w8a8_roles::expert_roles(0, 0) {
+        match pkg.tensor(&e.name) {
+            Ok(t) => println!("  expert role {:<13} -> {:<40} {:?} {:?}", e.role, e.name, t.dtype, t.shape),
+            Err(_) => println!("  expert role {} MISSING: {}", e.role, e.name),
+        }
+    }
+    println!("\nrole map: {} layer(s) failed to resolve", role_fail);
     Ok(())
 }
