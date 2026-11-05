@@ -1387,6 +1387,15 @@ struct KernelAnalysis {
     uses_matmul_cube: bool,
     /// True if kernel has binary/reduce ops that may alias (needs extra scratch TBuf)
     needs_alias_scratch: bool,
+    /// True when every `__tile_rms_norm_f32` in this kernel has a LITERAL row count of 1.
+    /// Only then may the output overwrite the source. The R>1 fallback walks rows with
+    /// GetValue/SetValue and must not; and the emitted row count is a runtime `__v0`, so
+    /// the arm cannot tell 1 from N once emission starts.
+    rms_norm_rows_are_one: bool,
+    /// True when some `__tile_rms_norm_f32` in this kernel has a width above
+    /// 11776 elements -- the widest f32 row whose FOUR full-width buffers still fit
+    /// the 188416 B unified buffer. Above it the compact form is used instead.
+    rms_norm_wide: bool,
     /// Buffer index of the scratch buffer for alias resolution (last TBuf)
     alias_scratch_idx: usize,
 }
@@ -1442,6 +1451,8 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         use_ub_pointers: false,
         uses_matmul_cube: false,
         needs_alias_scratch: false,
+        rms_norm_rows_are_one: true,
+        rms_norm_wide: false,
         alias_scratch_idx: 0,
     };
 
@@ -1615,6 +1626,42 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
             vec_buf_count += 5;
         }
         if line.contains("@__tile_rms_norm_f32") {
+            let rargs = extract_call_args(line);
+            // The row count is an i32 constant, and `resolve_const_f32_ssa` only
+            // resolves FLOAT constants -- it returned None for `%r = constant(1 : i32)`,
+            // which silently kept every kernel on the four-buffer path.
+            let rows_literal = rargs.get(3).and_then(|a| {
+                func.body_lines.iter().find_map(|l| {
+                    if extract_result(l).as_deref() != Some(a.as_str()) {
+                        return None;
+                    }
+                    let tail = l.split("constant(").nth(1)?;
+                    let num: String = tail
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit() || *c == '-')
+                        .collect();
+                    num.parse::<i64>().ok()
+                })
+            });
+            if rows_literal != Some(1) {
+                analysis.rms_norm_rows_are_one = false;
+            }
+            let width_literal = rargs.get(4).and_then(|a| {
+                func.body_lines.iter().find_map(|l| {
+                    if extract_result(l).as_deref() != Some(a.as_str()) {
+                        return None;
+                    }
+                    let tail = l.split("constant(").nth(1)?;
+                    let num: String = tail
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit() || *c == '-')
+                        .collect();
+                    num.parse::<i64>().ok()
+                })
+            });
+            if width_literal.map(|w| w > 11776).unwrap_or(false) {
+                analysis.rms_norm_wide = true;
+            }
             // Vectorized rms_norm uses 4 bufs: sq scratch, reduce dst,
             // reduce work buf, and the output tile.
             vec_buf_count += 4;
@@ -8678,7 +8725,27 @@ fn generate_vector_compute_code(
                         let rows_expr = resolve_value(&args[3], &values);
                         let cols_expr = resolve_value(&args[4], &values);
                         let total = format!("({}) * ({})", rows_expr, cols_expr);
-                        // sq scratch (C floats)
+                        // Three full-width buffers, not four, for the R=1 fast path:
+                        // the square keeps its own (an in-place `Mul` over one
+                        // LocalTensor reads what it has already overwritten -- measured
+                        // on 910B2, every element wrong), the OUTPUT is the source
+                        // buffer after the scale, and the reduce work buffer is HALF
+                        // the row because a pairwise tree only needs the first pass.
+                        //
+                        // 64 + 64 + 32 KB = 160 KB fits a 188 KB buffer at 1x16384;
+                        // four full-width buffers are 262 KB and refuse.
+                        // ONLY when four full-width buffers would not fit. A kernel that
+                        // already fits keeps its old emission BYTE FOR BYTE, so this
+                        // cannot invalidate an artefact that is already certified.
+                        //
+                        // 11776 = 188416 / (4 buffers * 4 B): the widest f32 row whose
+                        // four-buffer form still fits the 188416 B unified buffer. Above
+                        // it the compact form (square separate, output in place, half
+                        // work buffer) is used instead -- and only for R=1, because the
+                        // R>1 fallback indexes rows through GetValue/SetValue and must
+                        // not write over its input.
+                        let inplace =
+                            analysis.rms_norm_rows_are_one && analysis.rms_norm_wide;
                         let sq_idx = buf_counter;
                         buf_counter += 1;
                         buf_sizes.insert(sq_idx, format!("(({}) + 7) / 8 * 8", total));
@@ -8686,14 +8753,24 @@ fn generate_vector_compute_code(
                         let red_idx = buf_counter;
                         buf_counter += 1;
                         buf_sizes.insert(red_idx, "8".to_string());
-                        // reduce work buf (AscendC requires work buf of same size as src)
+                        // reduce work buf: half on the fast path, full for the R>1 fallback
                         let work_idx = buf_counter;
                         buf_counter += 1;
-                        buf_sizes.insert(work_idx, format!("(({}) + 7) / 8 * 8", total));
-                        // output
-                        let buf_idx = buf_counter;
-                        buf_counter += 1;
-                        buf_sizes.insert(buf_idx, format!("(({}) + 7) / 8 * 8", total));
+                        let work_size = if inplace {
+                            format!("((({}) / 2) + 7) / 8 * 8", total)
+                        } else {
+                            format!("(({}) + 7) / 8 * 8", total)
+                        };
+                        buf_sizes.insert(work_idx, work_size);
+                        // output: the source buffer on the fast path
+                        let buf_idx = if inplace {
+                            src
+                        } else {
+                            let i = buf_counter;
+                            buf_counter += 1;
+                            buf_sizes.insert(i, format!("(({}) + 7) / 8 * 8", total));
+                            i
+                        };
 
                         if dma_dirty_bufs.contains(&src) {
                             writeln!(code, "AscendC::PipeBarrier<PIPE_ALL>();").unwrap();

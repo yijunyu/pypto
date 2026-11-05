@@ -5,11 +5,11 @@
  "shapes_source": "rust/ds4-rs-ascend/crates/engine_ascend/src/device.rs LAYER0_KERNELS",
  "generator": "shapes/gen_engine.py",
  "totals": {
-  "kernels": 3,
-  "tile": 3,
+  "kernels": 4,
+  "tile": 4,
   "pto": 2,
-  "ascendc": 3,
-  "device_verified": 3
+  "ascendc": 4,
+  "device_verified": 4
  },
  "kernels": {
   "rmsnorm_engine_1x512": {
@@ -44,6 +44,19 @@
    "device_metrics": {
     "max_rel": 6.001e-07,
     "time_ms": 0.016756,
+    "repeat": 20,
+    "tolerance": 1e-06
+   }
+  },
+  "rmsnorm_engine_1x16384": {
+   "tile": "tile/rmsnorm_engine_1x16384.tile",
+   "pto": null,
+   "pto_refused": "NPU UB budget (arch a2a3): tile of 65536B at offset 166400B would use 231936B > UB_SIZE 194560B. The AscendC path places this row by keeping the square separate, making the output the source buffer and halving the reduce work buffer (160 KB); rspto has no such form, so the PTO representation is refused.",
+   "ascendc": "ascendc/rmsnorm_engine_1x16384.cpp",
+   "device_check": "PASS 2026-11-05 on 910B2 (opencompass-01), 20 launches: wrong=0, max_rel=7.634e-08 against an f64 rms_norm at eps 1e-6, tolerance 1e-6; 0.024601 ms per launch after discarding the first. This is the engine's `hc_norm` slot.",
+   "device_metrics": {
+    "max_rel": 7.634e-08,
+    "time_ms": 0.024601,
     "repeat": 20,
     "tolerance": 1e-06
    }

@@ -35,6 +35,11 @@ MANIFEST = HERE.parent / "engine" / "manifest.json"
 SLOTS = [
     ("rms_norm_512", 512),
     ("rms_norm_1024", 1024),
+    # `hc_norm` is this chain at 1x16384 -- read off the only copy of that kernel in
+    # this repository, ptoas_rs/tests/fixtures/barrier/layer0.pto:1157, whose body is
+    # tload -> tmul -> trowsum -> tmuls(1/16384) -> tadds(1e-6) -> tsqrt -> trecip ->
+    # trowexpand -> tmul -> tstore. Both constants are in the fixture.
+    ("rmsnorm_engine_1x16384", 16384),
 ]
 EPS = 1e-6
 
