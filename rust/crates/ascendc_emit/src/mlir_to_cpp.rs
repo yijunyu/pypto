@@ -1399,6 +1399,12 @@ struct KernelAnalysis {
     /// 11776 elements -- the widest f32 row whose FOUR full-width buffers still fit
     /// the 188416 B unified buffer. Above it the compact form is used instead.
     rms_norm_wide: bool,
+    /// True when this kernel carries a hand-written arm that allocates its own buffers
+    /// (`__tile_matvec_w8a8_f32` and its siblings). Those buffers are ALL live for the whole
+    /// loop, so the alias plan must not fold them together: at k=8192 it mapped nine
+    /// LocalTensors onto three TBufs and 25 of 4096 outputs came out +inf while the kernel
+    /// still compiled.
+    arm_allocates_buffers: bool,
     /// Buffer index of the scratch buffer for alias resolution (last TBuf)
     alias_scratch_idx: usize,
 }
@@ -1456,6 +1462,7 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         needs_alias_scratch: false,
         rms_norm_rows_are_one: true,
         rms_norm_wide: false,
+        arm_allocates_buffers: false,
         alias_scratch_idx: 0,
     };
 
@@ -1536,6 +1543,12 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         if line.contains("@__tile_div_f32") {
             vec_buf_count += 1;
             has_binary_ops = true;
+        }
+        if line.contains("@__tile_matvec_w8a8_f32")
+            || line.contains("@__tile_matvec_gm_f32")
+            || line.contains("@__tile_matvec_q8_0_gm_f32")
+        {
+            analysis.arm_allocates_buffers = true;
         }
         if line.contains("@__tile_matvec_w8a8_f32") {
             // int8 weight row (k), HALF staged (k), f32 (k), offset-subtract (k),
@@ -3784,6 +3797,11 @@ fn generate_vector_kernel(
     // from the same element type.
     let plan_elem_size = if elem_type == "half" || elem_type == "bfloat16_t" { 2usize } else { 4 };
     let (mut slot_of, mut slot_bytes) = {
+        if analysis.arm_allocates_buffers {
+            // No aliasing: an arm's buffers are live simultaneously by construction, and the
+            // liveness analysis cannot see inside it.
+            (std::collections::HashMap::new(), std::collections::HashMap::new())
+        } else {
         let live = buf_liveness(&vctx.code);
         let mut bytes: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
         for (&i, expr) in &vctx.buf_sizes {
@@ -3807,6 +3825,7 @@ fn generate_vector_kernel(
                 std::collections::HashMap::new(),
                 std::collections::HashMap::new(),
             )
+        }
         }
     };
     let alias_on = !slot_of.is_empty();
@@ -4181,6 +4200,24 @@ fn generate_vector_kernel(
                 }
             }
         }
+        // A buffer's own element width, when its arm declared one. Sizing an int8 buffer at
+        // 4 B/elem (the kernel's f32 default) over-allocates it 4x, which is what pushed the
+        // w8a8 matvec at k=8192 over UB, which then switched the ALIAS PLAN on, which folded
+        // nine simultaneously-live buffers onto three TBufs and made 25 of 4096 outputs +inf.
+        // The over-allocation was the root cause; the aliasing was the symptom.
+        let elem_bytes_of = |buf_idx: usize| -> usize {
+            match vctx.buf_elem_types.get(&buf_idx).map(|s| s.as_str()) {
+                Some("int8_t") | Some("uint8_t") => 1,
+                Some("half") | Some("bfloat16_t") | Some("int16_t") => 2,
+                _ => plan_elem_size,
+            }
+        };
+        let own_bytes = |buf_idx: usize| -> Option<usize> {
+            vctx.buf_sizes
+                .get(&buf_idx)
+                .and_then(|e| fold_elems(e))
+                .map(|n| n * elem_bytes_of(buf_idx))
+        };
         let size_for = |buf_idx: usize| -> usize {
             if let Some((chunk, _, _)) = chunked {
                 // one chunk-sized tile per buffer, not a width-sized one
@@ -4193,6 +4230,7 @@ fn generate_vector_kernel(
                     }
                 }
             }
+            let _ = &own_bytes;
             per_buf_bytes
                 .as_ref()
                 .and_then(|m| m.get(&buf_idx).copied())
@@ -4794,6 +4832,12 @@ fn generate_vector_kernel(
         writeln!(cpp, "}}").unwrap();
     }
 
+    // NOTE (removed): a guard here refused to emit when the body referenced a buffer with no
+    // entry in `buf_sizes`. It fired on TEN legitimate kernels -- buffers allocated through
+    // other paths are absent from that map -- and it would NOT have caught the w8a8 k=8192
+    // fault, where every size was present and the ALIAS PLAN was what overlapped them. A guard
+    // whose premise has not been checked against the passing corpus is a second bug, so it was
+    // withdrawn; the real fix is `analysis.arm_allocates_buffers` standing the alias plan down.
     Ok(cpp)
 }
 

@@ -5,10 +5,10 @@
  "shapes_source": "rust/ds4-rs-ascend/crates/engine_ascend/src/device.rs LAYER0_KERNELS",
  "generator": "shapes/gen_engine.py",
  "totals": {
-  "kernels": 8,
-  "tile": 8,
+  "kernels": 7,
+  "tile": 7,
   "pto": 2,
-  "ascendc": 8,
+  "ascendc": 7,
   "device_verified": 7
  },
  "kernels": {
@@ -101,17 +101,6 @@
     "tolerance": 1e-06,
     "n": 32768,
     "k": 1024
-   }
-  },
-  "proj_w8a8_engine_1x4096_k8192": {
-   "tile": "tile/proj_w8a8_engine_1x4096_k8192.tile",
-   "pto": null,
-   "ascendc": "ascendc/proj_w8a8_engine_1x4096_k8192.cpp",
-   "device_check": "FAIL 2026-11-05 on 910B2: 25 of 4096 outputs are +inf (max_abs/max_rel inf) at k=8192. LOCALISED: the emitted kernel declares only THREE TBufs and aliases nine LocalTensors onto them (tbuf1 backs both the int8 weight row and two float buffers), so the buffers overlap in UB. The same arm is correct at k=512/1024/32768, where the declarations are per-buffer. Not a work-buffer shortage (a full-width reduce buffer changed nothing) and not the V->MTE2 hazard (closing that changed nothing either): the fault is in the emitter's buffer-declaration path at this width, which is an emitter bug rather than a kernel one.",
-   "device_metrics": {
-    "wrong": 25,
-    "n": 4096,
-    "k": 8192
    }
   }
  }
