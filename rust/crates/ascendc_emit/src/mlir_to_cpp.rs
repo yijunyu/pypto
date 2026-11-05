@@ -244,6 +244,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_matvec_f32",
     "__tile_matvec_gm_f32",
     "__tile_matvec_q8_0_gm_f32",
+    "__tile_matvec_w8a8_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1535,6 +1536,13 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         if line.contains("@__tile_div_f32") {
             vec_buf_count += 1;
             has_binary_ops = true;
+        }
+        if line.contains("@__tile_matvec_w8a8_f32") {
+            // int8 weight row (k), cast to f32 (k), offset-subtract (k), product (k),
+            // reduce work (k/2), cell (8), out (n). SEVEN, and the declarations are
+            // generated from this count -- a short count here has already cost two
+            // device builds in this campaign.
+            vec_buf_count += 7;
         }
         if line.contains("@__tile_matvec_q8_0_gm_f32") {
             // x (k) comes from the load's buffer, out (n) is this arm's only allocation.
@@ -7996,6 +8004,114 @@ fn generate_vector_compute_code(
                                 cpp_type: "uint32_t".to_string(),
                             },
                         );
+                    }
+                }
+                continue;
+            }
+
+            // --- __tile_matvec_w8a8_f32: y[i] = sum_k a[k] * ((W8[i,k] - off[i]) * sc[i]) ---
+            //
+            // The Ascend-native quantisation: int8 weights with a PER-CHANNEL scale and
+            // offset, and f32 activations (the dynamic per-token activation scale is the
+            // caller's business; this kernel is the exact arithmetic either way).
+            //
+            // Unlike Q8_0's 34-byte blocks this layout is ALIGNED: a row is `k` contiguous
+            // int8 and k is a multiple of 32, so the row can be DMA'd whole and dequantised
+            // with one Cast + Adds + Muls instead of 4096 scalar byte reads. That is the
+            // difference between a kernel that certifies and one that does not.
+            if line.contains("@__tile_matvec_w8a8_f32") {
+                if let Some(result) = extract_result(line) {
+                    let a = extract_call_args(line);
+                    if a.len() >= 7 {
+                        let w_arg = a[0].trim().to_string();
+                        let s_arg = a[1].trim().to_string();
+                        let o_arg = a[2].trim().to_string();
+                        let x = resolve_buf_index(&a[3], &ssa_to_buf, &values);
+                        let n_expr = resolve_value(&a[5], &values);
+                        let k_expr = resolve_value(&a[6], &values);
+                        let idx_of = |arg: &str| {
+                            analysis.gm_args.iter().position(|(_, name)| {
+                                name == arg || format!("%{name}") == arg
+                            })
+                        };
+                        match (idx_of(&w_arg), idx_of(&s_arg), idx_of(&o_arg)) {
+                            (Some(wi), Some(si), Some(oi)) => {
+                                gm_elem_types.insert(wi, "int8_t".to_string());
+                                let nb = |sz: String| format!("(({}) + 7) / 8 * 8", sz);
+                                let w8 = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(w8, nb(k_expr.clone()));
+                                buf_elem_types.insert(w8, "int8_t".to_string());
+                                let wf = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(wf, nb(k_expr.clone()));
+                                let sh = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(sh, nb(k_expr.clone()));
+                                let pr = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(pr, nb(k_expr.clone()));
+                                let rw = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(rw, nb(format!("({}) / 2", k_expr)));
+                                let cell = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(cell, "8".to_string());
+                                let out = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(out, nb(n_expr.clone()));
+                                writeln!(
+                                    code,
+                                    r#"{{ // tile_matvec_w8a8: y[i] = sum_k a[k] * ((q - off[i]) * sc[i])
+  int __n = ({n}); int __k = ({k});
+  for (int __i = 0; __i < __n; ++__i) {{
+    AscendC::DataCopy(buf{w8}, gm{wi}Tensor[__i * __k], __k);
+    AscendC::PipeBarrier<PIPE_ALL>();
+    AscendC::Cast(buf{wf}, buf{w8}, AscendC::RoundMode::CAST_NONE, __k);
+    AscendC::PipeBarrier<PIPE_V>();
+    const float __sc = ((__gm__ float *)gm{si}Tensor.GetPhyAddr())[__i];
+    const float __off = ((__gm__ float *)gm{oi}Tensor.GetPhyAddr())[__i];
+    AscendC::Adds(buf{sh}, buf{wf}, -__off, __k);
+    AscendC::PipeBarrier<PIPE_V>();
+    AscendC::Muls(buf{wf}, buf{sh}, __sc, __k);
+    AscendC::PipeBarrier<PIPE_V>();
+    AscendC::Mul(buf{pr}, buf{x}, buf{wf}, __k);
+    AscendC::PipeBarrier<PIPE_V>();
+    AscendC::ReduceSum(buf{c}, buf{pr}, buf{r}, __k);
+    AscendC::PipeBarrier<PIPE_ALL>();
+    buf{o}.SetValue(__i, buf{c}.GetValue(0));
+  }}
+}}"#,
+                                    n = n_expr,
+                                    k = k_expr,
+                                    wi = wi,
+                                    si = si,
+                                    oi = oi,
+                                    w8 = w8,
+                                    wf = wf,
+                                    sh = sh,
+                                    pr = pr,
+                                    r = rw,
+                                    c = cell,
+                                    x = x,
+                                    o = out
+                                )
+                                .unwrap();
+                                vec_dirty_bufs.insert(out);
+                                vec_compute_dst_bufs.insert(out);
+                                ssa_to_buf.insert(result.clone(), out);
+                                values.insert(
+                                    result,
+                                    CppValue { expr: format!("{out}"), cpp_type: "uint32_t".to_string() },
+                                );
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "`__tile_matvec_w8a8_f32` operands {w_arg}/{s_arg}/{o_arg} must \
+                                     all be GM arguments"
+                                ));
+                            }
+                        }
                     }
                 }
                 continue;
