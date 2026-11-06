@@ -73,7 +73,7 @@ call("e", "__tile_exp_f32", ["c0", scores, "c1", ncol], "(i32, i32, i32, i32)")
 call("den", "__tile_reduce_sum_f32", ["c0", "e", "c1", ncol], "(i32, i32, i32, i32)")
 acc = "acc"
 for b in range(blocks):
-    call(f"vb{b}", "__tile_load_at_f32", ["kv", f"off{b}", "cSB", "cD"], f"({P}, i32, i32, i32)")
+    call(f"vb{b}", "__tile_load_at_f32", ["kv", f"off{b}", "cSB", cD], f"({P}, i32, i32, i32)")
     for r in range(SB):
         L.append(f"    %w{b}_{r} = llvm.mlir.constant({b * SB + r} : i32) : i32\n")
         L.append(f"    %ri{b}_{r} = llvm.mlir.constant({r} : i32) : i32\n")
@@ -81,15 +81,15 @@ for b in range(blocks):
         # CERTIFIED bit-exact (iteration 68). The 6-argument form has never been certified on device.
         if blocks == 1:
             acc = call(acc, "__tile_row_axpy_f32",
-                       [acc, f"vb{b}", "e", f"ri{b}_{r}", "cD"],
+                       [acc, f"vb{b}", "e", f"ri{b}_{r}", cD],
                        "(i32, i32, i32, i32, i32)")
         else:
             acc = call(acc, "__tile_row_axpy2_f32",
-                       [acc, f"vb{b}", "e", f"w{b}_{r}", f"ri{b}_{r}", "cD"],
+                       [acc, f"vb{b}", "e", f"w{b}_{r}", f"ri{b}_{r}", cD],
                        "(i32, i32, i32, i32, i32, i32)")
 call("d2", "__tile_mul_f32", ["c0", "den", "den", "c1", "c1"], "(i32, i32, i32, i32, i32)")
 call("inv", "__tile_rsqrt_f32", ["c0", "d2", "c1", "c1"], "(i32, i32, i32, i32)")
-call("outv", "__tile_row_scale_f32", ["c0", acc, "inv", "c1", "cD"], "(i32, i32, i32, i32, i32)")
+call("outv", "__tile_row_scale_f32", ["c0", acc, "inv", "c1", cD], "(i32, i32, i32, i32, i32)")
 L.append(f'    llvm.call @__tile_store_f32(%o, %outv, %c1, %{cD}) : ({P}, i32, i32, i32) -> ()\n')
 
 header = (f"// Engine slot: ds4_attn_sink_batched -- ONE HEAD, {blocks} block(s) of 8, D=512.\n"
