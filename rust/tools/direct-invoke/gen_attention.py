@@ -25,7 +25,8 @@ import sys
 
 blocks = int(sys.argv[1]) if len(sys.argv) > 1 else 1
 out = sys.argv[2] if len(sys.argv) > 2 else "/tmp/attn.tile"
-SB, D = 8, 512
+SB = 8
+D = int(sys.argv[3]) if len(sys.argv) > 3 else 512
 P = "!llvm.ptr<1>"
 L = []
 body = "".join(f"    %c{v} = llvm.mlir.constant({v} : i32) : i32\n" for v in (0, 1, SB, D, blocks))
