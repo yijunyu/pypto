@@ -154,6 +154,42 @@ fn main() -> anyhow::Result<()> {
         anyhow::ensure!(x.iter().all(|v| v.is_finite()), "the residual after block {b} is not finite");
         anyhow::ensure!(rms > 0.0, "the residual after block {b} is all zero");
     }
-    println!("PASS: GLM 5.3's block 0 ran through the assembled KDA path on its own weights");
+    // THE HEAD. GLM 5.3 TIES it to the embedding: `token_embd.weight [4096, 154880]`. The final norm is applied
+    // first if the checkpoint carries one by that name -- checked, not assumed.
+    let out_norm = g.dequant_name("output_norm.weight").ok();
+    let xf = match &out_norm {
+        Some(w) => engine_core::kda_block::gated_rms_norm(
+            &x, &w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], cfg.rms_norm_eps as f64),
+        None => {
+            println!("no output_norm.weight in this checkpoint -- the trunk output is used as-is");
+            x.clone()
+        }
+    };
+    let head = g.dequant_name("token_embd.weight")?;
+    let vocab = head.len() / d;
+    println!("head: token_embd, {vocab} outputs (tied embedding)");
+    anyhow::ensure!(vocab == cfg.vocab_size, "head is {vocab} wide, config says {}", cfg.vocab_size);
+    let t1 = std::time::Instant::now();
+    let mut best = (f64::NEG_INFINITY, 0usize);
+    let mut checked = 0usize;
+    for r in 0..vocab {
+        let mut acc = 0.0f64;
+        for c in 0..d {
+            acc += head[r * d + c] as f64 * xf[c];
+        }
+        if !acc.is_finite() {
+            // one non-finite logit would make the argmax meaningless, so it is a refusal, not a warning
+            anyhow::bail!("logit {r} is not finite");
+        }
+        checked += 1;
+        if acc > best.0 {
+            best = (acc, r);
+        }
+    }
+    anyhow::ensure!(checked == vocab, "only {checked} of {vocab} logits were computed");
+    println!("logits: {checked} finite, best {:.4} at id {}", best.0, best.1);
+    println!("TOKEN from GLM 5.3: {} (vocab {vocab})  ({:.1}s)", best.1, t1.elapsed().as_secs_f64());
+    anyhow::ensure!(best.1 < vocab, "token id outside the vocabulary");
+    println!("PASS: GLM 5.3 produced a token from its own weights, through the assembled blocks and its own head");
     Ok(())
 }
