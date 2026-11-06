@@ -60,7 +60,7 @@
   "ascendc_refused": 8,
   "tile_rs_refused": 6,
   "reshaped": 0,
-  "device_verified": 18
+  "device_verified": 19
  },
  "kernels": {
   "argmax_glm53_1x154880": {
@@ -191,12 +191,15 @@
   },
   "shexp_gate_up_silu_glm53_1x2048": {
    "tile": "tile/shexp_gate_up_silu_glm53_1x2048.tile",
-   "pto": "pto/shexp_gate_up_silu_glm53_1x2048.pto",
+   "pto": null,
    "ascendc": "ascendc/shexp_gate_up_silu_glm53_1x2048.cpp",
-   "tile_rs": null,
-   "tile_rs_refused": "refused bench/glm_5_3/pto/shexp_gate_up_silu_glm53_1x2048.pto: `%pto9` is read by 2 ops in `glm53_shexp_swiglu`, and `tile_std`'s `Tile` is not `Copy`, so the lift would move it twice. A tile loaded from memory is re-loaded instead; this one is not -- it is produced by a compute op, or it is read af",
-   "ascendc_sha256_16": "c418470c33b59e1d",
-   "pto_sha256_16": "7b976b0486eeba66"
+   "device_check": "PASS 2026-11-06 on 910B2: elements=2048 wrong=0 max_abs 7.104e-06 max_rel 1.526e-07 (oracle 8). The shared expert's gate/up projection and SiLU for GLM 5.3's MoE.",
+   "device_metrics": {
+    "elements": 2048,
+    "max_rel": 1.526e-07,
+    "tolerance": 1e-05
+   },
+   "verify_args": "dav-2201 glm53_shexp_swiglu_do 2048 4 8 1e-5f 1e-6 1 2048"
   },
   "proj_kv_b_glm53_1x28672": {
    "tile": "tile/proj_kv_b_glm53_1x28672.tile",
