@@ -54,6 +54,10 @@ engine/ascendc/proj_w8a8_engine_1x512_k4096           dav-2201 proj_w8a8_engine_
 engine/ascendc/proj_w8a8_engine_1x32768_k1024         dav-2201 proj_w8a8_engine_1x32768_k1024_do 8400000 5 15 1e-5f 1e-6 3 32768 1024
 engine/ascendc/proj_w8a8_engine_1x4096_k8192           dav-2201 proj_w8a8_engine_1x4096_k8192_do   8400000 5 15 1e-5f 1e-6 3 4096 8192
 engine/ascendc/proj_w8a8_engine_1x24_k16384           dav-2201 proj_w8a8_engine_1x24_k16384_do   200000 5 15 1e-5f 1e-6 3 24 16384
+# Attention primitives (certified 2026-11-06, bit-exact). The engine's flash kernel needs both.
+# NOTE: these are PRIMITIVE probes, not engine slots; they belong here so a regression is caught.
+engine/ascendc/../prim/col_expand_1x8_16                        dav-2201 ce_probe_do   128 2 18 1e-5f 1e-6 3 8 16
+engine/ascendc/../prim/row_scale_1x8_16                         dav-2201 rs_probe_do   128 3 19 1e-5f 1e-6 3 8 16
 # q8mv rows need EXACT inputs: DS4_IN_DIR/DS4_REF_FILE (mkq8mv.py), because the harness's
 # synthetic ramps give a scale plane of ~1e7 and weight bytes that are a by-product of float writes.
 engine/ascendc/proj_q8mv_engine_1x1024_k4096          dav-2201 proj_q8mv_engine_1x1024_k4096_do  4300000 4 17 1e-5f 1e-6 3 1024 4096

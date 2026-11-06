@@ -223,6 +223,13 @@ extern "C" {
     /// Returns a (ROWS × 1) tile where each row is the max of that row.
     pub fn __tile_reduce_max_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
+    /// Scale each row of an ROWS x COLS tile by that row's entry in a 1 x ROWS tile.
+    ///
+    /// The runtime-scalar counterpart of `__tile_scale_f32`, whose scalar is a compile-time f32.
+    /// The engine's flash attention needs exactly this for its weighted-V accumulation:
+    /// `acc += w[r] * V[r][:]` where `w` is a softmax result computed on the device.
+    pub fn __tile_row_scale_f32(dst: u32, src: u32, w: u32, rows: u32, cols: u32) -> u32;
+
     /// Broadcast a 1 x COLS tile across ROWS rows -- the COLUMN-wise counterpart of
     /// `__tile_row_expand_f32`.
     ///

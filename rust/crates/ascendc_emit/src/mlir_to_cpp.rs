@@ -248,6 +248,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_matvec_w8a8_gm_f32",
     "__tile_matvec_q8mv_f32",
     "__tile_col_expand_f32",
+    "__tile_row_scale_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1552,6 +1553,10 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         //   2. the buffer count here, or the kernel references undeclared buffers (rounds 20, 54, 61);
         //   3. the `arm_allocates_buffers` set, or the alias plan folds live buffers (rounds 22, 59);
         //   4. a `tile_std` declaration, or call conformance refuses the tile.
+        if line.contains("@__tile_row_scale_f32") {
+            // one rows*cols tile
+            vec_buf_count += 1;
+        }
         if line.contains("@__tile_col_expand_f32") {
             // one rows*cols tile
             vec_buf_count += 1;
@@ -5979,6 +5984,54 @@ fn generate_vector_compute_code(
             // this emitter uses (`Duplicate` fills from a scalar the compiler
             // knows), so it is a scalar loop -- the same shape the rope identity
             // uses, and honest about being a loop rather than a vector op.
+            // --- __tile_row_scale_f32: scale each row by a RUNTIME scalar ---
+            //
+            // `__tile_scale_f32` takes a compile-time f32; attention needs the softmax weights, which
+            // exist only on the device. One `Muls` per row into that row's slice, with the scalar
+            // read from the weight tile -- the same slice idiom `col_expand` uses.
+            if line.contains("@__tile_row_scale_f32") {
+                if let Some(result) = extract_result(line) {
+                    let args = extract_call_args(line);
+                    if args.len() >= 5 {
+                        let src = resolve_buf_index(&args[1], &ssa_to_buf, &values);
+                        let wt = resolve_buf_index(&args[2], &ssa_to_buf, &values);
+                        let rows_expr = resolve_value(&args[3], &values);
+                        let cols_expr = resolve_value(&args[4], &values);
+                        let buf_idx = buf_counter;
+                        buf_counter += 1;
+                        buf_sizes.insert(
+                            buf_idx,
+                            format!("((({}) * ({})) + 7) / 8 * 8", rows_expr, cols_expr),
+                        );
+                        writeln!(
+                            code,
+                            r#"{{ // tile_row_scale: each row times w[row]
+  AscendC::PipeBarrier<PIPE_ALL>();
+  int __rs_rows = ({rows}); int __rs_cols = ({cols});
+  for (int __r = 0; __r < __rs_rows; ++__r)
+    AscendC::Muls(buf{d}[__r * __rs_cols], buf{s}[__r * __rs_cols],
+                  buf{w}.GetValue(__r), __rs_cols);
+  AscendC::PipeBarrier<PIPE_ALL>();
+}}"#,
+                            rows = rows_expr,
+                            cols = cols_expr,
+                            d = buf_idx,
+                            s = src,
+                            w = wt
+                        )
+                        .unwrap();
+                        vec_dirty_bufs.insert(buf_idx);
+                        vec_compute_dst_bufs.insert(buf_idx);
+                        ssa_to_buf.insert(result.clone(), buf_idx);
+                        values.insert(
+                            result,
+                            CppValue { expr: format!("{}", buf_idx), cpp_type: "uint32_t".to_string() },
+                        );
+                    }
+                }
+                continue;
+            }
+
             // --- __tile_col_expand_f32: broadcast a 1 x COLS tile across ROWS rows ---
             //
             // The column-wise counterpart of `__tile_row_expand_f32`, and a scalar loop for the
