@@ -33,6 +33,24 @@ pub struct BlockPlan {
 
 /// One entry per block, in index order.
 pub fn schedule(g: &GgufFile) -> anyhow::Result<Vec<BlockPlan>> {
+    schedule_of(&g.tensors)
+}
+
+/// The same scan over a TENSOR LIST, which is what a sharded checkpoint needs: a K3 shard is a disjoint
+/// slice, so the schedule is only complete once every shard's table is merged. (Shard 1 of Kimi K3 carries
+/// metadata only and has NO block tensors at all, which the single-file form reports as "not block-stacked".)
+pub fn schedule_of(tensors: &[crate::gguf::TensorInfo]) -> anyhow::Result<Vec<BlockPlan>> {
+    let g = GgufFile {
+        version: 0,
+        n_tensors: 0,
+        n_meta_kv: 0,
+        meta: Vec::new(),
+        tensors: tensors.to_vec(),
+        tensor_table_offset: 0,
+        tensor_data_offset: 0,
+        file_size: 0,
+    };
+    let g = &g;
     let n = g
         .tensors
         .iter()
