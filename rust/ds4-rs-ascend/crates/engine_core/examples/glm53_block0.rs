@@ -121,6 +121,15 @@ fn main() -> anyhow::Result<()> {
         }
         Err(_) => (0..d).map(|i| ((i % 11) as f64 - 5.0) * 0.01).collect(),
     };
+    // HYPER-CONNECTIONS, when GLM53_HC=1: the residual becomes N parallel streams that are mixed per sublayer by a
+    // Sinkhorn-normalised 4x4 matrix predicted from the state (`hc_attn_fn/base/scale`). Without the flag the driver adds
+    // the residual directly, which is what every earlier token was produced with.
+    let hc_n: usize = if std::env::var_os("GLM53_HC").is_some() { 4 } else { 1 };
+    let mut streams: Vec<Vec<f64>> = vec![x.clone(); hc_n];
+    let hc_eps = 1e-8f64;
+    let hc_iters: usize = 20;
+    if hc_n > 1 { println!("hyper-connections: {hc_n} streams, {hc_iters} Sinkhorn iterations"); }
+
     // 8192-wide projections from the real weight matrix (f64, one row at a time).
     let proj = |w: &[f32]| -> Vec<f64> {
         (0..8192)
@@ -147,10 +156,25 @@ fn main() -> anyhow::Result<()> {
     let upto = plan.len().min(trunk).min(env_blocks());
     println!("trunk: {upto} of {} blocks (block_count 46, trunk_block_count {trunk})", plan.len());
     for b in 0..upto {
+        // THE STREAMS BECOME THE BLOCK'S INPUT when hyper-connections are on.
+        if hc_n > 1 {
+            let f = g.dequant_name(&format!("blk.{b}.hc_attn_fn.weight"))?;
+            let base = g.dequant_name(&format!("blk.{b}.hc_attn_base.weight"))?;
+            let sc = g.dequant_name(&format!("blk.{b}.hc_attn_scale.weight"))?;
+            let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &streams, hc_n, hc_iters, hc_eps);
+            x = hp.block_input(&streams, hc_n);
+        }
         if plan[b].attn == Attn::Mla {
             let op = mla_block_1token(&g, b, &x, d, cfg.rms_norm_eps as f64)?;
             println!("MLA-TENSOR decode blk{b}: {:?}", &op[..3]);
             for i in 0..d { x[i] += op[i]; }
+            if hc_n > 1 {
+                let f = g.dequant_name(&format!("blk.{b}.hc_attn_fn.weight"))?;
+                let base = g.dequant_name(&format!("blk.{b}.hc_attn_base.weight"))?;
+                let sc = g.dequant_name(&format!("blk.{b}.hc_attn_scale.weight"))?;
+                let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &streams, hc_n, hc_iters, hc_eps);
+                streams = hp.next_state(&streams, &x, hc_n);
+            }
             let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
             println!("block {b}: MLA, rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
             if b <= 4 { println!("BLK{b}-TENSOR decode (MLA): {:?}", &x[..3]); }
