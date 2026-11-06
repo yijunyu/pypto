@@ -6273,8 +6273,10 @@ fn generate_vector_compute_code(
     // faulted the device -- so the branch is in the generated code, where it cannot be missed.
     // V->S: the scalar is read on the SCALAR pipe from a buffer a VECTOR op just wrote.
     // `PipeBarrier<PIPE_ALL>` does not order that pair; the flag/wait does.
-    AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
-    AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    // EVENT_ID1, not ID0: the reduce arms use ID0 for their own V_S pairs, and a second pair on the
+    // same id can consume the wrong event -- which reads a stale (in this case inf) scalar.
+    AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID1);
+    AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID1);
     float __ce_val = buf{s}.GetValue(0);
     AscendC::Duplicate(buf{d}, __ce_val, __ce_rows);
   }} else {{
