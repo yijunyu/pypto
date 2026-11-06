@@ -9,10 +9,12 @@
 //!
 //! usage: w8a8_full_token <package dir> <token id> [max_layers]
 
+use engine_ascend::attn_device::AscendAttentionDispatcher;
 use engine_core::attn_dispatch::{
-    decode_attn_prefix_with, decode_attn_suffix_with, AttnLayerWeights, AttnStepInputs, CpuAttentionDispatcher,
+    decode_attn_prefix_with, decode_attn_suffix_with, AttnLayerWeights, AttnStepInputs,
     KvCacheView, LayerParams,
 };
+use engine_core::dispatch::CpuDispatcher;
 use engine_core::moe::{hash_router_weights_from_probs, softplus_sqrt};
 use engine_core::safetensors::Package;
 use engine_core::w8a8_roles::{PackageViews, WeightSource};
@@ -53,6 +55,11 @@ fn main() -> anyhow::Result<()> {
     let vocab = emb.len() / d;
     anyhow::ensure!(token < vocab, "token {token} past the vocabulary");
     let x0 = &emb[token * d..(token + 1) * d];
+
+    // THE SEAM, in use: the attention dispatcher holds the kernel dispatcher. With `CpuDispatcher`
+    // inside it must reproduce the previous token exactly; swapping in `AscendDispatcher` is what
+    // moves the routed methods onto the device.
+    let attn = AscendAttentionDispatcher::new(CpuDispatcher);
 
     let mut cur_hc = vec![0.0f32; n_hc * d];
     for h in 0..n_hc { cur_hc[h * d..(h + 1) * d].copy_from_slice(x0); }
@@ -95,7 +102,7 @@ fn main() -> anyhow::Result<()> {
             n_raw: 0, raw_start: 0, routed_out: &zero,
             kv_comp_rows: None, n_comp: 0, comp_selected: None, n_selected: 0,
         };
-        let prefix = decode_attn_prefix_with(&CpuAttentionDispatcher, &layer, &mut step);
+        let prefix = decode_attn_prefix_with(&attn, &layer, &mut step);
 
         // MoE: hash routing for the first three layers, router scores after that.
         let fg = pkg.f32_tensor(&format!("{p}.ffn_norm.weight"))?;
@@ -130,7 +137,7 @@ fn main() -> anyhow::Result<()> {
             for (a, b) in routed.iter_mut().zip(&y) { *a += w[i] * b; }
         }
 
-        let out = decode_attn_suffix_with(&CpuAttentionDispatcher, &layer, &prefix, &routed, 0);
+        let out = decode_attn_suffix_with(&attn, &layer, &prefix, &routed, 0);
         anyhow::ensure!(out.len() == n_hc * d, "layer {layer_idx} returned {} floats", out.len());
         let r = (out.iter().map(|v| v * v).sum::<f32>() / out.len() as f32).sqrt();
         println!("layer {layer_idx:>2}: experts {picked:?} rms {r:.4} finite {}", out.iter().all(|v| v.is_finite()));
