@@ -35,10 +35,15 @@ MANIFEST = HERE.parent / "engine" / "manifest.json"
 SLOTS = [
     ("rms_norm_512", 512),
     ("rms_norm_1024", 1024),
+    # `rms_norm_4096` was credited by `rmsnorm_glm53_1x4096`, which is ALSO a pure rms_norm. The
+    # engine's socket is `ds4_rmsmul_4096(x, gamma, out)`, so the slot needs its own row here.
+    ("rms_norm_4096", 4096),
     # `hc_norm` is this chain at 1x16384 -- read off the only copy of that kernel in
     # this repository, ptoas_rs/tests/fixtures/barrier/layer0.pto:1157, whose body is
     # tload -> tmul -> trowsum -> tmuls(1/16384) -> tadds(1e-6) -> tsqrt -> trecip ->
     # trowexpand -> tmul -> tstore. Both constants are in the fixture.
+    # 16384 is `hc_norm`, whose socket is `ds4_hc_norm(float*, float*)` -- TWO arguments and NO
+    # gamma. It is handled separately below and must not get the rmsmul treatment.
     ("rmsnorm_engine_1x16384", 16384),
 ]
 EPS = 1e-6
@@ -156,18 +161,46 @@ def w8a8_mv(slot, k, n):
     )
 
 
+def rmsmul_mod(name, body):
+    """Three arguments, matching the engine's `ds4_rmsmul_W(x, g, o)`."""
+    return (
+        "// Engine slot (ds4-rs-ascend): RMS-norm TIMES GAMMA, the engine's `ds4_rmsmul_W`.\n"
+        "// x, g, o -- three pointers, because the engine's socket has three.\n"
+        "module {\n  llvm.func @" + name + "(%x: !llvm.ptr<1>, %g: !llvm.ptr<1>, "
+        "%o: !llvm.ptr<1>) attributes {hacc.entry} {\n" + body + "\n    llvm.return\n  }\n}\n"
+    )
+
+
 def kernels():
     out = {}
     for slot, n in SLOTS:
+        if n == 16384:
+            # hc_norm: pure rms_norm, two arguments (ds4_hc_norm(float*, float*)).
+            body = (
+                c("r", 1)
+                + c("cl", n)
+                + f'    %eps = llvm.mlir.constant({EPS} : f32) : f32\n'
+                f'    %x = llvm.call @__tile_load_f32(%arg0, %r, %cl) : (!llvm.ptr<1>, i32, i32) -> i32\n'
+                f'    %o = llvm.call @__tile_rms_norm_f32(%x, %x, %eps, %r, %cl) : (i32, i32, f32, i32, i32) -> i32\n'
+                f'    llvm.call @__tile_store_f32(%arg1, %o, %r, %cl) : (!llvm.ptr<1>, i32, i32, i32) -> ()'
+            )
+            out[f"rmsnorm_engine_1x{n}"] = mod(f"engine_rms_norm_1_{n}", body)
+            continue
+        # The engine's socket is `ds4_rmsmul_W(x, gamma, out)`: the fixture's chain ENDS in
+        # `tmul(%out, %g)` (layer0.pto:223). A pure rms_norm matches the width and not the
+        # computation, which is why these rows carry gamma and three arguments.
         body = (
             c("r", 1)
             + c("cl", n)
             + f'    %eps = llvm.mlir.constant({EPS} : f32) : f32\n'
-            f'    %x = llvm.call @__tile_load_f32(%arg0, %r, %cl) : (!llvm.ptr<1>, i32, i32) -> i32\n'
-            f'    %o = llvm.call @__tile_rms_norm_f32(%x, %x, %eps, %r, %cl) : (i32, i32, f32, i32, i32) -> i32\n'
-            f'    llvm.call @__tile_store_f32(%arg1, %o, %r, %cl) : (!llvm.ptr<1>, i32, i32, i32) -> ()'
+            f'    %z = llvm.mlir.constant(0 : i32) : i32\n'
+            f'    %x = llvm.call @__tile_load_f32(%x, %r, %cl) : (!llvm.ptr<1>, i32, i32) -> i32\n'
+            f'    %gm = llvm.call @__tile_load_f32(%g, %r, %cl) : (!llvm.ptr<1>, i32, i32) -> i32\n'
+            f'    %nrm = llvm.call @__tile_rms_norm_f32(%x, %x, %eps, %r, %cl) : (i32, i32, f32, i32, i32) -> i32\n'
+            f'    %sc = llvm.call @__tile_mul_f32(%z, %nrm, %gm, %r, %cl) : (i32, i32, i32, i32, i32) -> i32\n'
+            f'    llvm.call @__tile_store_f32(%o, %sc, %r, %cl) : (!llvm.ptr<1>, i32, i32, i32) -> ()'
         )
-        out[f"rmsnorm_engine_1x{n}"] = mod(f"engine_rmsnorm_1_{n}", body)
+        out[f"rmsnorm_engine_rmsmul_1x{n}"] = rmsmul_mod(f"engine_rmsmul_1_{n}", body)
     for slot, k, n in W8A8_MV:
         # the chunked arm is the one that fits k above the buffer
         out[slot] = w8a8_mv_chunked(slot, k, n) if k > 4096 else w8a8_mv(slot, k, n)

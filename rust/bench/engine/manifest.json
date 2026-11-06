@@ -5,37 +5,13 @@
  "shapes_source": "rust/ds4-rs-ascend/crates/engine_ascend/src/device.rs LAYER0_KERNELS",
  "generator": "shapes/gen_engine.py",
  "totals": {
-  "kernels": 9,
-  "tile": 9,
-  "pto": 2,
-  "ascendc": 9,
-  "device_verified": 9
+  "kernels": 10,
+  "tile": 10,
+  "pto": 0,
+  "ascendc": 10,
+  "device_verified": 10
  },
  "kernels": {
-  "rmsnorm_engine_1x512": {
-   "tile": "tile/rmsnorm_engine_1x512.tile",
-   "pto": "pto/rmsnorm_engine_1x512.pto",
-   "ascendc": "ascendc/rmsnorm_engine_1x512.cpp",
-   "device_check": "PASS 2026-11-05 on 910B2 (opencompass-01), 20 launches: wrong=0, max_rel=7.052e-08 against an f64 rms_norm at eps 1e-6, tolerance 1e-6; 0.021066 ms per launch after discarding the first.",
-   "device_metrics": {
-    "max_rel": 7.052e-08,
-    "time_ms": 0.021066,
-    "repeat": 20,
-    "tolerance": 1e-06
-   }
-  },
-  "rmsnorm_engine_1x1024": {
-   "tile": "tile/rmsnorm_engine_1x1024.tile",
-   "pto": "pto/rmsnorm_engine_1x1024.pto",
-   "ascendc": "ascendc/rmsnorm_engine_1x1024.cpp",
-   "device_check": "PASS 2026-11-05 on 910B2 (opencompass-01), 20 launches: wrong=0, max_rel=5.866e-08 against an f64 rms_norm at eps 1e-6, tolerance 1e-6; 0.016993 ms per launch after discarding the first.",
-   "device_metrics": {
-    "max_rel": 5.866e-08,
-    "time_ms": 0.016993,
-    "repeat": 20,
-    "tolerance": 1e-06
-   }
-  },
   "rope_halves_engine_1x64": {
    "tile": "tile/rope_halves_engine_1x64.tile",
    "pto": null,
@@ -129,6 +105,48 @@
     "tolerance": 1e-06,
     "n": 24,
     "k": 16384
+   }
+  },
+  "rmsnorm_engine_rmsmul_1x512": {
+   "tile": "tile/rmsnorm_engine_rmsmul_1x512.tile",
+   "pto": null,
+   "ascendc": "ascendc/rmsnorm_engine_rmsmul_1x512.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2, 3 launches: wrong=0, backward relative error 3.340e-08 against an f64 oracle, tolerance 1e-6; 0.015010 ms. RMS-norm TIMES GAMMA -- the engine's `ds4_rmsmul_512(x, g, o)` socket, three pointers, matching the fixture's chain which ends in tmul(out, gamma).",
+   "device_metrics": {
+    "backward_rel": 3.34e-08,
+    "time_ms": 0.01501,
+    "repeat": 3,
+    "tolerance": 1e-06,
+    "n": 512,
+    "args": 3
+   }
+  },
+  "rmsnorm_engine_rmsmul_1x1024": {
+   "tile": "tile/rmsnorm_engine_rmsmul_1x1024.tile",
+   "pto": null,
+   "ascendc": "ascendc/rmsnorm_engine_rmsmul_1x1024.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2, 3 launches: wrong=0, backward relative error 2.953e-08 against an f64 oracle, tolerance 1e-6; 0.035690 ms. RMS-norm TIMES GAMMA -- the engine's `ds4_rmsmul_1024(x, g, o)` socket, three pointers, matching the fixture's chain which ends in tmul(out, gamma).",
+   "device_metrics": {
+    "backward_rel": 2.953e-08,
+    "time_ms": 0.03569,
+    "repeat": 3,
+    "tolerance": 1e-06,
+    "n": 1024,
+    "args": 3
+   }
+  },
+  "rmsnorm_engine_rmsmul_1x4096": {
+   "tile": "tile/rmsnorm_engine_rmsmul_1x4096.tile",
+   "pto": null,
+   "ascendc": "ascendc/rmsnorm_engine_rmsmul_1x4096.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2, 3 launches: wrong=0, backward relative error 1.317e-07 against an f64 oracle, tolerance 1e-6; 0.026020 ms. RMS-norm TIMES GAMMA -- the engine's `ds4_rmsmul_4096(x, g, o)` socket, three pointers, matching the fixture's chain which ends in tmul(out, gamma).",
+   "device_metrics": {
+    "backward_rel": 1.317e-07,
+    "time_ms": 0.02602,
+    "repeat": 3,
+    "tolerance": 1e-06,
+    "n": 4096,
+    "args": 3
    }
   }
  }

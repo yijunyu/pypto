@@ -15,9 +15,9 @@
 #define TILE_OUT_FILL 0
 #endif
 
-class Kernel_engine_rmsnorm_1_16384 {
+class Kernel_engine_rms_norm_1_16384 {
 public:
-    __aicore__ inline Kernel_engine_rmsnorm_1_16384() {}
+    __aicore__ inline Kernel_engine_rms_norm_1_16384() {}
     __aicore__ inline void Init(GM_ADDR gm0, GM_ADDR gm1) {
         gm0_raw = (uint64_t)(uintptr_t)gm0;
         gm1_raw = (uint64_t)(uintptr_t)gm1;
@@ -89,13 +89,13 @@ private:
     uint64_t gm1_raw;
 };
 
-extern "C" __global__ __aicore__ void engine_rmsnorm_1_16384(GM_ADDR gm0, GM_ADDR gm1) {
-    Kernel_engine_rmsnorm_1_16384 op;
+extern "C" __global__ __aicore__ void engine_rms_norm_1_16384(GM_ADDR gm0, GM_ADDR gm1) {
+    Kernel_engine_rms_norm_1_16384 op;
     op.Init(gm0, gm1);
     op.Process();
 }
 
 
-extern "C" void engine_rmsnorm_1_16384_do(uint32_t blockDim, void *stream, uint8_t *gm0, uint8_t *gm1) {
-    engine_rmsnorm_1_16384<<<blockDim, nullptr, stream>>>(gm0, gm1);
+extern "C" void engine_rms_norm_1_16384_do(uint32_t blockDim, void *stream, uint8_t *gm0, uint8_t *gm1) {
+    engine_rms_norm_1_16384<<<blockDim, nullptr, stream>>>(gm0, gm1);
 }

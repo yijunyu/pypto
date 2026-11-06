@@ -46,6 +46,9 @@ engine/ascendc/rmsnorm_engine_1x512                  dav-2201 engine_rmsnorm_1_5
 engine/ascendc/rmsnorm_engine_1x1024                 dav-2201 engine_rmsnorm_1_1024_do        1024 2  1 1e-5f 1e-6
 engine/ascendc/rope_halves_engine_1x64                dav-2201 rope_halves_engine_1x64_do         64 4 12 1e-5f 1e-6
 engine/ascendc/rmsnorm_engine_1x16384                 dav-2201 engine_rmsnorm_1_16384_do        16384 2  1 1e-5f 1e-6
+engine/ascendc/rmsnorm_engine_rmsmul_1x512            dav-2201 engine_rmsmul_1_512_do           512 3 16 1e-5f 1e-6 3
+engine/ascendc/rmsnorm_engine_rmsmul_1x1024           dav-2201 engine_rmsmul_1_1024_do          1024 3 16 1e-5f 1e-6 3
+engine/ascendc/rmsnorm_engine_rmsmul_1x4096           dav-2201 engine_rmsmul_1_4096_do          4096 3 16 1e-5f 1e-6 3
 engine/ascendc/proj_w8a8_engine_1x1024_k4096          dav-2201 proj_w8a8_engine_1x1024_k4096_do  1200000 5 15 1e-5f 1e-6 3 1024 4096
 engine/ascendc/proj_w8a8_engine_1x512_k4096           dav-2201 proj_w8a8_engine_1x512_k4096_do   600000 5 15 1e-5f 1e-6 3 512 4096
 engine/ascendc/proj_w8a8_engine_1x32768_k1024         dav-2201 proj_w8a8_engine_1x32768_k1024_do 8400000 5 15 1e-5f 1e-6 3 32768 1024
