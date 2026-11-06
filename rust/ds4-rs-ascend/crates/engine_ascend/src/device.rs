@@ -752,7 +752,6 @@ impl DeviceLaunch {
             // block walks all rows: N blocks are N redundant copies contending for the same DMA, and for
             // the w8a8 expert matvec that deadlocked (eight rounds), while for the q8mv matvecs the
             // copies are idempotent and merely wasteful -- which is why the model still produced its
-            // token and hid the divergence.
             let rc = ffi::rtKernelLaunch(
                 self.stub(spec.name)?,
                 1,
