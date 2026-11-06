@@ -6266,8 +6266,21 @@ fn generate_vector_compute_code(
   // `Adds(dst, src, 0.0f, n)` is this vocabulary's copy, and a row slice is `buf[i * cols]`.
   AscendC::PipeBarrier<PIPE_ALL>();
   int __ce_rows = ({rows}); int __ce_cols = ({cols});
-  for (int __r = 0; __r < __ce_rows; ++__r)
-    AscendC::Adds(buf{d}[__r * __ce_cols], buf{s}, 0.0f, __ce_cols);
+  if (__ce_cols == 1) {{
+    // SCALAR broadcast, at RUNTIME. `Adds` needs 32 B (8 f32) minimum, so a one-element copy is
+    // illegal; `Duplicate` is the intrinsic for filling with one value. Deciding this at EMIT time
+    // from a resolved string silently failed to fire and left the illegal Adds in place, which
+    // faulted the device -- so the branch is in the generated code, where it cannot be missed.
+    // V->S: the scalar is read on the SCALAR pipe from a buffer a VECTOR op just wrote.
+    // `PipeBarrier<PIPE_ALL>` does not order that pair; the flag/wait does.
+    AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    float __ce_val = buf{s}.GetValue(0);
+    AscendC::Duplicate(buf{d}, __ce_val, __ce_rows);
+  }} else {{
+    for (int __r = 0; __r < __ce_rows; ++__r)
+      AscendC::Adds(buf{d}[__r * __ce_cols], buf{s}, 0.0f, __ce_cols);
+  }}
   AscendC::PipeBarrier<PIPE_ALL>();
 }}"#,
                             rows = rows_expr,
