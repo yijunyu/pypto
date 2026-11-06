@@ -10,7 +10,7 @@
 //!
 //! usage: w8a8_lm_head_banded <elf> [bands]
 
-use engine_ascend::device::{DeviceLaunch, Partitioning};
+use engine_ascend::device::DeviceLaunch;
 use engine_ascend::launch::KernelLaunch;
 use std::path::PathBuf;
 
@@ -60,23 +60,9 @@ fn main() -> anyhow::Result<()> {
         sc.extend(std::iter::repeat_n(0.0f32, PAD / 4));
         let mut of = offset[lo..hi].to_vec();
         of.extend(std::iter::repeat_n(0.0f32, PAD / 4));
-        let mut band = dev.run_by_symbol(
-            &kname,
-            &ksym,
-            Partitioning::ByRow,
-            &[
-                // THE SAME FLAGS THE WORKING PATH USES. `matvec_w8a8_experts` passes the weight and
-                // both plane buffers as PINNED (`true`) and only x as transient; this example passed all
-                // four as transient, which selects a different upload path in the launcher. The banded
-                // launch hung at both k=2048 and k=4096 with everything transient, while the expert
-                // launch at the same width and k=2048 returns 1.130e-07 with the planes pinned.
-                (unsafe { std::slice::from_raw_parts(x.as_ptr() as *const u8, x.len() * 4) }, false),
-                (unsafe { std::slice::from_raw_parts(w.as_ptr() as *const u8, w.len()) }, true),
-                (unsafe { std::slice::from_raw_parts(sc.as_ptr() as *const u8, sc.len() * 4) }, true),
-                (unsafe { std::slice::from_raw_parts(of.as_ptr() as *const u8, of.len() * 4) }, true),
-            ],
-            BAND,
-        )?;
+        // THE WORKING BODY, reached for a decomposition kernel: same marshalling, same flags, same
+        // run_raw_cached call as `matvec_w8a8_experts`, with the spec taken from DECOMPOSITION_KERNELS.
+        let mut band = dev.matvec_w8a8_banded(&kname, &w, &sc, &of, &x, BAND)?;
         anyhow::ensure!(band.len() == BAND, "band {b} returned {}", band.len());
         got.append(&mut band);
     }

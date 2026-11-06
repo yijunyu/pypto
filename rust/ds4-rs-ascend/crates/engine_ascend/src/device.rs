@@ -897,6 +897,34 @@ impl DeviceLaunch {
     /// As `run_raw`, but inputs marked `true` are PINNED — uploaded once under their host
     /// identity and reused across launches. Transient inputs and the output keep the
     /// allocate-per-call shape.
+
+    /// `matvec_w8a8_experts` for a kernel in [`DECOMPOSITION_KERNELS`] rather than a slot.
+    ///
+    /// IDENTICAL in every other respect to the method above -- same marshalling, same flags, same call.
+    /// It exists because the banded launch hangs through `run_by_symbol` at the same width and k where this
+    /// sequence returns 1.130e-07, and three candidates (k, the pin flags, the spec's identity) were
+    /// eliminated by measurement. Having the WORKING body reachable for a decomposition kernel turns "the
+    /// two paths differ somewhere" into a diff of two functions that should now be the same.
+    pub fn matvec_w8a8_banded(
+        &self,
+        name: &str,
+        codes: &[i8],
+        scale: &[f32],
+        offset: &[f32],
+        x: &[f32],
+        d_out: usize,
+    ) -> Result<Vec<f32>> {
+        let spec = DECOMPOSITION_KERNELS
+            .iter()
+            .find(|k| k.name == name)
+            .ok_or_else(|| anyhow::anyhow!("{name} is not in DECOMPOSITION_KERNELS"))?;
+        let xb = unsafe { std::slice::from_raw_parts(x.as_ptr() as *const u8, x.len() * 4) };
+        let wb = unsafe { std::slice::from_raw_parts(codes.as_ptr() as *const u8, codes.len()) };
+        let sb = unsafe { std::slice::from_raw_parts(scale.as_ptr() as *const u8, scale.len() * 4) };
+        let ob = unsafe { std::slice::from_raw_parts(offset.as_ptr() as *const u8, offset.len() * 4) };
+        self.run_raw_cached(spec, &[(xb, false), (wb, true), (sb, true), (ob, true)], d_out)
+    }
+
     /// Launch a kernel by SYMBOL, without a named slot.
     ///
     /// The slot table (`LAYER0_KERNELS`) describes what the ENGINE's layer code calls, and its denominator
