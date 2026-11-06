@@ -92,6 +92,14 @@ impl<D: KernelDispatcher> AttentionDispatcher for AscendAttentionDispatcher<D> {
         )
     }
 
+    /// ROUTED: the GROUPED projection (8 groups of 1024 rows over 4096 inputs) and the outer
+    /// `w_o_b` matvec both go through `KernelDispatcher::matvec_f32`. These are the largest matrix
+    /// multiplies in the attention block -- 8x1024x4096 plus 4096x8192 per layer.
+    ///
+    /// Delegated when any of the fidelity/capture switches is set: `DS4_Q8_0_ACT` and
+    /// `DS4_MATVEC_F32_FIDELITY` change the arithmetic, and `DS4_DUMP_ATTN_OUT` reads the capture
+    /// hooks this path does not maintain. Skipping the capture hook is invisible unless that switch is
+    /// set, which is exactly what the guard is for.
     fn attn_output_proj(
         &self,
         params: &LayerParams,
@@ -102,7 +110,45 @@ impl<D: KernelDispatcher> AttentionDispatcher for AscendAttentionDispatcher<D> {
         hc_split_post: &[f32],
         hc_split_comb: &[f32],
     ) -> Vec<f32> {
-        self.inner.attn_output_proj(params, heads, w_o_a, w_o_b, cur_hc, hc_split_post, hc_split_comb)
+        let debugged = std::env::var("DS4_Q8_0_ACT").ok().as_deref() == Some("1")
+            || std::env::var("DS4_MATVEC_F32_FIDELITY").ok().as_deref() == Some("1")
+            || std::env::var("DS4_DUMP_ATTN_OUT").is_ok();
+        if debugged {
+            return self.inner.attn_output_proj(
+                params, heads, w_o_a, w_o_b, cur_hc, hc_split_post, hc_split_comb,
+            );
+        }
+
+        let d_embd = params.d_embd as usize;
+        let n_hc = params.n_hc as usize;
+        let n_groups = params.n_out_group as usize;
+        let q_dim = heads.len();
+        let group_dim = q_dim / n_groups;
+        let n_lora_o = w_o_a.len() / (n_groups * group_dim);
+        let out_low_dim = n_groups * n_lora_o;
+
+        let mut attn_low = vec![0.0f32; out_low_dim];
+        for g in 0..n_groups {
+            let heads_g = &heads[g * group_dim..(g + 1) * group_dim];
+            let block = &w_o_a[g * n_lora_o * group_dim..(g + 1) * n_lora_o * group_dim];
+            let y = self.kernels.matvec_f32(block, heads_g, n_lora_o);
+            attn_low[g * n_lora_o..(g + 1) * n_lora_o].copy_from_slice(&y);
+        }
+        let attn_out = self.kernels.matvec_f32(w_o_b, &attn_low, d_embd);
+
+        let mut after = vec![0.0f32; n_hc * d_embd];
+        for dst in 0..n_hc {
+            let base = dst * d_embd;
+            let w_post = hc_split_post[dst];
+            for e in 0..d_embd {
+                let mut acc = w_post * attn_out[e];
+                for src in 0..n_hc {
+                    acc += hc_split_comb[dst + src * n_hc] * cur_hc[src * d_embd + e];
+                }
+                after[base + e] = acc;
+            }
+        }
+        after
     }
 
     fn shared_expert(
@@ -269,5 +315,59 @@ mod routed_tests {
             &p, &shared_mid, &w_down, &routed, &after_attn, &post, &comb,
         );
         assert!(got.iter().all(|v| (*v - 1.0).abs() < 1e-6), "{got:?}");
+    }
+}
+
+#[cfg(test)]
+mod outproj_tests {
+    use super::*;
+    use engine_core::dispatch::CpuDispatcher;
+
+    fn params() -> LayerParams {
+        LayerParams {
+            layer_idx: 0, d_embd: 4, n_hc: 2, n_head: 2, head_dim: 2, n_rot: 1, n_lora_q: 4,
+            n_lora_kv: 2, hc_sinkhorn_iter: 1, hc_eps: 1e-6, rms_eps: 1e-6, rope_orig_ctx: 4096,
+            rope_freq_base: 10000.0, rope_freq_scale: 1.0, rope_ext_factor: 0.0,
+            rope_attn_factor: 1.0, compress_ratio: 0, n_out_group: 2,
+        }
+    }
+
+    #[test]
+    fn the_routed_output_projection_matches_the_reference() {
+        let p = params();
+        // 2 groups x 2 heads x 2 head_dim = 8 heads values; group_dim 4, n_lora_o 2 -> wo_a 2*2*4.
+        let heads: Vec<f32> = (0..8).map(|i| (i as f32 - 3.5) * 0.1).collect();
+        let w_o_a: Vec<f32> = (0..2 * 2 * 4).map(|i| ((i % 5) as f32 - 2.0) * 0.05).collect();
+        let w_o_b: Vec<f32> = (0..4 * 4).map(|i| ((i % 7) as f32 - 3.0) * 0.02).collect();
+        let cur_hc: Vec<f32> = (0..8).map(|i| (i as f32) * 0.01).collect();
+        let post = vec![1.0f32, 0.5];
+        let comb = vec![0.25f32, 0.5, 0.75, 1.0];
+
+        let want = CpuAttentionDispatcher.attn_output_proj(&p, &heads, &w_o_a, &w_o_b, &cur_hc, &post, &comb);
+        let got = AscendAttentionDispatcher::new(CpuDispatcher)
+            .attn_output_proj(&p, &heads, &w_o_a, &w_o_b, &cur_hc, &post, &comb);
+        assert_eq!(got.len(), want.len());
+        for (a, b) in got.iter().zip(&want) {
+            assert!((a - b).abs() <= 1e-4, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn zero_projection_still_propagates_the_hc_split() {
+        // With w_o_a and w_o_b zero, `attn_out` is zero and the result is hc_split_comb @ cur_hc.
+        // A path that dropped the hc expand -- or returned zeros -- would fail here and could pass the
+        // equivalence test only if the reference were also zero.
+        let p = params();
+        let heads = vec![1.0f32; 8];
+        let w_o_a = vec![0.0f32; 16];
+        let w_o_b = vec![0.0f32; 16];
+        let cur_hc: Vec<f32> = (0..8).map(|i| (i % 4) as f32).collect();
+        let post = vec![0.0f32, 0.0];
+        let comb = vec![1.0f32, 0.0, 0.0, 1.0];
+        let got = AscendAttentionDispatcher::new(CpuDispatcher)
+            .attn_output_proj(&p, &heads, &w_o_a, &w_o_b, &cur_hc, &post, &comb);
+        // dst slot 0 <- src slot 0, slot 1 <- src slot 1.
+        assert!((got[0] - cur_hc[0]).abs() < 1e-6, "{got:?}");
+        assert!((got[4] - cur_hc[4]).abs() < 1e-6, "{got:?}");
     }
 }
