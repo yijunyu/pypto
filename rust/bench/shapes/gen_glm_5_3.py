@@ -103,13 +103,18 @@ def kernels(s):
         # matvec arm: (w, scale, offset, x, dst, n, k) -> n outputs, one per weight row.
         # The arm was unusable above ~1280 rows until iteration 151 taught it to DMA its
         # planes as tiles instead of reading them with a row-indexed scalar GM access.
+        # EXACTLY the certified convention (rust/bench/engine/tile/proj_w8a8_engine_*):
+        # args are (x, w, scale, offset, out) -- the harness binds by ARITY and its oracle
+        # says "this kernel is x, w, scale, offset -> out" -- x is loaded into a TILE, the
+        # arm takes (w, sc, of, x, dst, n, k), and the result is STORED explicitly.
         b = (
-            c("z", 0)
-            + c("cr1x", 1)
-            + c("nn", n)
+            c("r", 1)
             + c("kk", D)
-            + f"""    %xk = llvm.call @__tile_load_f32(%arg3, %cr1x, %kk) : (!llvm.ptr<1>, i32, i32) -> i32
-    %o = llvm.call @__tile_matvec_w8a8_f32(%arg0, %arg1, %arg2, %xk, %z, %nn, %kk) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32) -> i32
+            + c("nn", n)
+            + c("z", 0)
+            + f"""    %x = llvm.call @__tile_load_f32(%arg0, %r, %kk) : (!llvm.ptr<1>, i32, i32) -> i32
+    %res = llvm.call @__tile_matvec_w8a8_f32(%arg1, %arg2, %arg3, %x, %z, %nn, %kk) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32) -> i32
+    llvm.call @__tile_store_f32(%arg4, %res, %r, %nn) : (!llvm.ptr<1>, i32, i32, i32) -> ()
 """
         )
         out[f"proj_{name}_glm53_{T}x{n}"] = mod(f"glm53_proj_{name}", 5, b)
