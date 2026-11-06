@@ -80,6 +80,8 @@ fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("usage: glm53_block0 <gguf>"))?;
     let cfg = DefaultsGlm5::from_gguf(&GgufFile::open(&path)?)?;
     let plan = schedule(&GgufFile::open(&path)?)?;
+    let expert_scale = engine_core::glm53_ffn::expert_weights_scale(&GgufFile::open(&path)?)?;
+    println!("expert_weights_scale = {expert_scale} (read from the file)");
     anyhow::ensure!(plan[0].attn == Attn::Kda, "block 0 is not KDA in this checkpoint");
     println!("config: hidden {} layers {}; block 0 = KDA", cfg.hidden_size, cfg.num_hidden_layers);
 
@@ -175,7 +177,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 engine_core::glm53_plan::Ffn::Moe => {
-                    let (dn, used) = engine_core::glm53_ffn::moe_ffn(&g, b, &x, d, cfg.rms_norm_eps as f64)?;
+                    let (dn, used) = engine_core::glm53_ffn::moe_ffn(&g, expert_scale, b, &x, d, cfg.rms_norm_eps as f64)?;
                     for i in 0..d { x[i] += dn[i]; }
                     moe_used = used;
                 }
@@ -277,7 +279,7 @@ fn main() -> anyhow::Result<()> {
             let dn: Vec<f64> = (0..d).map(|r| (0..act.len()).map(|c| wd[r * act.len() + c] as f64 * act[c]).sum()).collect();
             for i in 0..d { x[i] += dn[i]; }
         } else if plan[b].ffn == engine_core::glm53_plan::Ffn::Moe {
-            let (dn, used) = engine_core::glm53_ffn::moe_ffn(&g, b, &x, d, cfg.rms_norm_eps as f64)?;
+            let (dn, used) = engine_core::glm53_ffn::moe_ffn(&g, expert_scale, b, &x, d, cfg.rms_norm_eps as f64)?;
             for i in 0..d { x[i] += dn[i]; }
             moe_used = used;
         } else {

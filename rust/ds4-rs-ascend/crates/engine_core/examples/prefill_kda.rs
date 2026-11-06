@@ -95,7 +95,7 @@ fn mla_block_n(g: &ShardedGguf, b: usize, c: &Ctx, xs: &[Vec<f64>]) -> anyhow::R
 }
 
 /// Run `blocks` blocks over `xs` (one row per token), handling each block by the schedule.
-fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], blocks: usize, xs: Vec<Vec<f64>>) -> anyhow::Result<Vec<Vec<f64>>> {
+fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], blocks: usize, xs: Vec<Vec<f64>>, scale: f64) -> anyhow::Result<Vec<Vec<f64>>> {
     let n = xs.len();
     let mut x = xs;
     for b in 0..blocks {
@@ -224,7 +224,7 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                 // THE SAME LIBRARY FUNCTION the decode driver calls. It was missing here entirely until iteration 213,
                 // which is what made the two drivers disagree at block 3.
                 for t in 0..n {
-                    let (dn, _used) = engine_core::glm53_ffn::moe_ffn(g, b, &x[t], c.d, c.eps)?;
+                    let (dn, _used) = engine_core::glm53_ffn::moe_ffn(g, scale, b, &x[t], c.d, c.eps)?;
                     for i in 0..c.d { x[t][i] += dn[i]; }
                 }
             }
@@ -262,9 +262,9 @@ fn main() -> anyhow::Result<()> {
     anyhow::ensure!(ids.len() == 2, "this example wants exactly two tokens, got {}", ids.len());
 
     // single-token run of token 0
-    let one = run(&g, &c, &plan, 1, vec![embed(&g, &v, ids[0], c.d)?])?;
+    let one = run(&g, &c, &plan, 1, vec![embed(&g, &v, ids[0], c.d)?], expert_scale)?;
     // two-token run of the same token followed by another
-    let two = run(&g, &c, &plan, 1, vec![embed(&g, &v, ids[0], c.d)?, embed(&g, &v, ids[1], c.d)?])?;
+    let two = run(&g, &c, &plan, 1, vec![embed(&g, &v, ids[0], c.d)?, embed(&g, &v, ids[1], c.d)?], expert_scale)?;
 
     let diff = one[0].iter().zip(&two[0]).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
     println!("position 0 after block 0: |1-token - 2-token| = {diff:.3e}");
@@ -288,7 +288,7 @@ fn main() -> anyhow::Result<()> {
     let blocks = std::env::var("PREFILL_BLOCKS").ok().and_then(|s| s.parse().ok()).unwrap_or(6usize);
     // PREFILL_ONE=1 runs the SINGLE-token chain, which is the only fair comparison with the decode driver.
     if std::env::var_os("PREFILL_ONE").is_some() {
-        let one = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?])?;
+        let one = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?], expert_scale)?;
         // THE FINAL NORM, which the decode driver applies and this one did not. It preserves direction and changes
         // magnitude, which is exactly the signature the comparison found: identical residuals, 4x logits.
         let xf = match g.dequant_name("output_norm.weight") {
@@ -308,8 +308,8 @@ fn main() -> anyhow::Result<()> {
         println!("FINAL-VEC prefill: {:?}", &one[0][..4]);
         return Ok(());
     }
-    let h1 = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?])?;
-    let h2 = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?, embed(&g, &v, ids[1], c.d)?])?;
+    let h1 = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?], expert_scale)?;
+    let h2 = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?, embed(&g, &v, ids[1], c.d)?], expert_scale)?;
     let head = g.dequant_name("token_embd.weight")?;
     let hw = head.len() / c.d;
     let logits = |h: &[f64]| -> (f64, usize) {

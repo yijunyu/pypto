@@ -25,11 +25,8 @@ pub fn expert_weights_scale(g: &GgufFile) -> anyhow::Result<f64> {
     anyhow::bail!("no expert_weights_scale in this checkpoint: the MoE sum would be weighted wrongly and silently")
 }
 
-pub fn moe_ffn(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) -> anyhow::Result<(Vec<f64>, usize)> {
-    // THE 2.5 IS A TRANSCRIPTION, and `expert_weights_scale` above is the read that should replace it. Threading the value
-    // to this call site needs a parameter through two driver helpers, which was not worth a red build this round: a
-    // transcribed constant with a reader beside it and a note saying which is which is honest; a broken build is not.
-    let scale = 2.5f64;
+pub fn moe_ffn(g: &ShardedGguf, scale: f64, b: usize, x: &[f64], d: usize, eps: f64) -> anyhow::Result<(Vec<f64>, usize)> {
+    // `scale` now comes from `expert_weights_scale(&GgufFile)` at the driver, so the 2.5 transcription is gone.
     let mv = |w: &[f32], xv: &[f64], k: usize, n: usize, off: usize| -> Vec<f64> {
         (0..n).map(|r| (0..k).map(|c| w[off + r * k + c] as f64 * xv[c]).sum()).collect()
     };
