@@ -306,8 +306,8 @@ fn main() -> anyhow::Result<()> {
             })
             .collect();
         if b >= 0 && std::env::var_os("KDA_INTER").is_some() {
-            println!("KDA-INTER blk{b} decode: q0={:?} beta={:?} dt0={:?} conv_q0={:?}",
-                q[0], &params.beta[..2], &params.dt_bias[..2], &params.conv_q[0]);
+            println!("KDA-INTER blk{b} decode: x0={:?} xin0={:?} q0={:?} beta0={:?}",
+                x[0], xin[0], q[0], params.beta[0]);
         }
         let o = block(&params, &q, &k, &v, &gate, 1, &onw, &ogate);
         anyhow::ensure!(o.iter().all(|v| v.is_finite()), "block {b} produced a non-finite value");
