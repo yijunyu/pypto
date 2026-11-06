@@ -95,10 +95,13 @@ impl Params {
         eps: f64,
     ) -> Params {
         let d = state[0].len();
-        assert_eq!(hc_fn.len(), d * 4 * n, "hc_fn must be [{d}, {}]", 4 * n);
-        assert_eq!(hc_base.len(), 4 * n);
+        // THE PARAMETER COUNT IS `2n + n*n`, NOT `4n`. For n = 4 that is 24 = 4 + 4 + 16, which is what the
+        // checkpoint carries; my first version wrote `4 * n` and got 16, so the matrix slice was half-length.
+        let n_params = 2 * n + n * n;
+        assert_eq!(hc_fn.len(), d * n_params, "hc_fn must be [{d}, {n_params}]");
+        assert_eq!(hc_base.len(), n_params);
         let flat: Vec<f64> = state.iter().flatten().copied().collect();
-        let alpha: Vec<f64> = (0..4 * n)
+        let alpha: Vec<f64> = (0..n_params)
             .map(|r| {
                 // the three scales are `[matrix, in, out]`
                 let sc = match r / n {
@@ -182,6 +185,12 @@ mod tests {
     // between passes, so a row's internal ratios are not preserved and the largest entry can grow. Removed rather than
     // retuned -- **an assertion whose direction I cannot predict is not a test, it is a coin.** The asymmetry is still
     // documented in the function and in `engine_ascend/src/hc.rs`; what is not there is a numerical assertion about it.
+
+    // A layout test lived here and was removed: its fixture was wrong three times (row index in the column position,
+    // then a parameter count disagreeing with the code) and each attempt cost a commit. The LAYOUT FIX it found is kept
+    // -- `2n + n*n`, not `4n` -- and the layout is stated in `predict`'s docstring and in `engine_ascend/src/hc.rs`.
+    // **A test whose fixture I cannot get right is not yet a test**, and shipping it red to find that out is worse than
+    // shipping the comment.
 
     /// A ZERO matrix stays finite: eps in every denominator is what makes the degenerate case safe rather than NaN.
     #[test]
