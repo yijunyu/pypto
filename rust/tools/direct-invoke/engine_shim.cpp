@@ -41,3 +41,35 @@ __global__ __aicore__ void ds4_rope_halves(__gm__ float *x, __gm__ float *cs, __
     op.Init((GM_ADDR)x, (GM_ADDR)cs, (GM_ADDR)sn, (GM_ADDR)o);
     op.Process();
 }
+
+// THE FOUR PROJECTION SOCKETS. `ds4_q8mv_<in>_<out>(w: si8, s: f32, x: f32, o: f32)` -- four
+// pointers, and the block scales arrive PRE-EXPANDED into a full f32 plane (layer0.pto:3), so the
+// generated kernels compute exactly `out[r] = sum_k w8[r,k]*x[k]*s[r,k]` with no block arithmetic.
+// All four shapes are certified on device; these shims are what let the engine bind them.
+__global__ __aicore__ void ds4_q8mv_4096_1024(__gm__ signed char *w, __gm__ float *s,
+                                              __gm__ float *x, __gm__ float *o) {
+    Kernel_proj_q8mv_engine_1x1024_k4096 op;
+    op.Init((GM_ADDR)w, (GM_ADDR)s, (GM_ADDR)x, (GM_ADDR)o);
+    op.Process();
+}
+
+__global__ __aicore__ void ds4_q8mv_1024_32768(__gm__ signed char *w, __gm__ float *s,
+                                               __gm__ float *x, __gm__ float *o) {
+    Kernel_proj_q8mv_engine_1x32768_k1024 op;
+    op.Init((GM_ADDR)w, (GM_ADDR)s, (GM_ADDR)x, (GM_ADDR)o);
+    op.Process();
+}
+
+__global__ __aicore__ void ds4_q8mv_4096_512(__gm__ signed char *w, __gm__ float *s,
+                                             __gm__ float *x, __gm__ float *o) {
+    Kernel_proj_q8mv_engine_1x512_k4096 op;
+    op.Init((GM_ADDR)w, (GM_ADDR)s, (GM_ADDR)x, (GM_ADDR)o);
+    op.Process();
+}
+
+__global__ __aicore__ void ds4_q8mv_8192_4096(__gm__ signed char *w, __gm__ float *s,
+                                              __gm__ float *x, __gm__ float *o) {
+    Kernel_proj_q8mv_engine_1x4096_k8192 op;
+    op.Init((GM_ADDR)w, (GM_ADDR)s, (GM_ADDR)x, (GM_ADDR)o);
+    op.Process();
+}

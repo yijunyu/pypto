@@ -82,15 +82,19 @@ def test_the_shim_mangles_to_the_engine_socket_symbols():
     # The five slots the shim claims, by name.
     for slot in ("rms_norm_4096", "rms_norm_1024", "rms_norm_512", "hc_norm", "rope_halves"):
         assert slot in syms, f"{slot} vanished from device.rs"
-    assert checked == 5, f"expected the shim to cover five sockets, it declares {checked}"
+    assert checked == 9, f"expected the shim to cover nine sockets, it declares {checked}"
 
 
-def test_the_quantised_sockets_are_deliberately_uncovered():
+def test_the_still_unimplemented_sockets_are_deliberately_uncovered():
     # A shim entry for these would compile and would be wrong: 4-argument Q8_0 with a companion
     # plane against 5-argument w8a8. Keeping them out is the point, so their absence is asserted.
+    # `ds4_q8mv_*` LEFT THIS LIST when it was IMPLEMENTED (iteration 57-60): its four pointers are
+    # (w, s, x, o) with pre-expanded scales, which a Rust kernel now computes exactly. What stays
+    # out is what has no kernel behind it: packed formats (`hc_mv`, `mx4pk_*`), flash attention,
+    # and the grouped MoE.
     fns = shim_functions()
-    for name in ("ds4_q8mv_4096_1024", "ds4_q8mv_1024_32768", "ds4_hc_mv",
-                 "ds4_mx4pk_4096_2048", "ds4_mx4pk_2048_4096"):
+    for name in ("ds4_hc_mv", "ds4_mx4pk_4096_2048", "ds4_mx4pk_2048_4096",
+                 "ds4_attn_sink_batched", "ds4_gmm_swiglu_quant_16"):
         assert name not in fns, (
             f"{name} is in the shim, but its socket is a packed/quantised format the w8a8 arms "
             f"do not implement -- that is the over-credit iterations 45-46 removed"

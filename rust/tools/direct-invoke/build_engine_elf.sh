@@ -25,4 +25,8 @@ python3 "$here/merge_kernels.py" "$out" \
     "$bench/rmsnorm_engine_rmsmul_1x4096.cpp" \
     "$bench/rmsnorm_engine_1x16384.cpp" \
     "$bench/rope_halves_engine_1x64.cpp" \
+    "$bench/proj_q8mv_engine_1x1024_k4096.cpp" \
+    "$bench/proj_q8mv_engine_1x32768_k1024.cpp" \
+    "$bench/proj_q8mv_engine_1x512_k4096.cpp" \
+    "$bench/proj_q8mv_engine_1x4096_k8192.cpp" \
     "$here/engine_shim.cpp"
