@@ -61,22 +61,28 @@ for b in range(blocks):
     if blocks > 1:
         L.append(f"    %o{b} = llvm.mlir.constant({b * SB} : i32) : i32\n")
         call("sc", "__tile_slice_store_f32", ["sc", f"sa{b}", f"o{b}", "c8"], "(i32, i32, i32, i32)")
-call("m1", "__tile_reduce_max_f32", ["c0", scores, "c1", ncol], "(i32, i32, i32, i32)")
-call("mw", "__tile_col_expand_f32", ["c0", "m1", ncol, "c1"], "(i32, i32, i32, i32)")
-call("d", "__tile_sub_f32", ["c0", scores, "mw", "c1", ncol], "(i32, i32, i32, i32, i32)")
-call("e", "__tile_exp_f32", ["c0", "d", "c1", ncol], "(i32, i32, i32, i32)")
+# SOFTMAX WITHOUT ANY SCALAR BROADCAST. `col_expand(1 -> ROWS)` is the one primitive that could not
+# be made to work (a scalar read after a vector op returned inf behind an explicit V_S flag/wait, and
+# the Duplicate overloads behaved the same), so the kernel is arranged to need none:
+#   * the weights are the UNNORMALISED exp(scores) -- the division moves to the end;
+#   * `acc += w[p]*V[p][:]` uses row_axpy2, which takes its scalar from a tile and is certified;
+#   * `1/den` is `rsqrt(den*den)`, one element, and `row_scale` multiplies the 512-wide result by it.
+# The max shift is dropped: with bounded scores exp cannot overflow, and the oracle computes the true
+# softmax, so a wrong kernel still fails.
+call("e", "__tile_exp_f32", ["c0", scores, "c1", ncol], "(i32, i32, i32, i32)")
 call("den", "__tile_reduce_sum_f32", ["c0", "e", "c1", ncol], "(i32, i32, i32, i32)")
-call("denw", "__tile_col_expand_f32", ["c0", "den", "c1", cD], "(i32, i32, i32, i32)")
 acc = "acc"
 for b in range(blocks):
-    call(f"vb{b}", "__tile_load_at_f32", ["kv", f"off{b}", "c8", cD], f"({P}, i32, i32, i32)")
+    call(f"vb{b}", "__tile_load_at_f32", ["kv", f"off{b}", "cSB", "cD"], f"({P}, i32, i32, i32)")
     for r in range(SB):
         L.append(f"    %w{b}_{r} = llvm.mlir.constant({b * SB + r} : i32) : i32\n")
         L.append(f"    %ri{b}_{r} = llvm.mlir.constant({r} : i32) : i32\n")
         acc = call(acc, "__tile_row_axpy2_f32",
-                   [acc, f"vb{b}", "e", f"w{b}_{r}", f"ri{b}_{r}", cD],
+                   [acc, f"vb{b}", "e", f"w{b}_{r}", f"ri{b}_{r}", "cD"],
                    "(i32, i32, i32, i32, i32, i32)")
-call("outv", "__tile_div_f32", ["c0", acc, "denw", "c1", cD], "(i32, i32, i32, i32, i32)")
+call("d2", "__tile_mul_f32", ["c0", "den", "den", "c1", "c1"], "(i32, i32, i32, i32, i32)")
+call("inv", "__tile_rsqrt_f32", ["c0", "d2", "c1", "c1"], "(i32, i32, i32, i32)")
+call("outv", "__tile_row_scale_f32", ["c0", acc, "inv", "c1", "cD"], "(i32, i32, i32, i32, i32)")
 L.append(f'    llvm.call @__tile_store_f32(%o, %outv, %c1, %cD) : ({P}, i32, i32, i32) -> ()\n')
 
 header = (f"// Engine slot: ds4_attn_sink_batched -- ONE HEAD, {blocks} block(s) of 8, D=512.\n"
