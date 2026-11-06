@@ -234,10 +234,24 @@ fn main() -> anyhow::Result<()> {
             conv_q: load_conv(&g, b, "kda_q_conv", heads * head_dim)?,
             conv_k: load_conv(&g, b, "kda_k_conv", heads * head_dim)?,
             conv_v: load_conv(&g, b, "kda_v_conv", heads * head_dim)?,
-            dt_bias: vec![0.0; heads * head_dim], beta: vec![0.5; heads],
+            // THE REAL dt BIAS: kda_dt_bias is [8192], one value per channel.
+            dt_bias: {
+                let raw = g.dequant_name(&format!("blk.{b}.kda_dt_bias.weight"))?;
+                anyhow::ensure!(raw.len() == heads * head_dim, "kda_dt_bias is {} not {}", raw.len(), heads * head_dim);
+                raw.iter().map(|v| *v as f64).collect()
+            },
+            beta: vec![0.5; heads],
             eps: cfg.rms_norm_eps as f64,
         };
-        let gate = vec![0.0f64; heads * head_dim];
+        // THE TIME STEP, from the block's own f-gate: dt = f_b(f_a(normed x)) + dt_bias, 8192 channels.
+        let fa = g.dequant_name(&format!("blk.{b}.kda_f_a.weight"))?;
+        let fb = g.dequant_name(&format!("blk.{b}.kda_f_b.weight"))?;
+        let hid: Vec<f64> = (0..128)
+            .map(|r| (0..d).map(|c| fa[r * d + c] as f64 * xin[c]).sum())
+            .collect();
+        let gate: Vec<f64> = (0..heads * head_dim)
+            .map(|r| (0..128).map(|c| fb[r * 128 + c] as f64 * hid[c]).sum())
+            .collect();
         let o = block(&params, &q, &k, &v, &gate, 1, &onw);
         anyhow::ensure!(o.iter().all(|v| v.is_finite()), "block {b} produced a non-finite value");
         // output projection (8192 -> d) then the residual
