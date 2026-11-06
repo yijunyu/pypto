@@ -80,6 +80,81 @@ fn run(g: &ShardedGguf, c: &Ctx, blocks: usize, xs: Vec<Vec<f64>>) -> anyhow::Re
     Ok(x)
 }
 
+
+/// ONE MLA BLOCK over N positions, causally. Returns one row of `d` per position.
+///
+/// For each position: q_a -> q_b (64 heads x 256), kv_a -> 512 latents, then k_b and v_b per head (256 x 512). Attention
+/// is over positions `s <= t` only -- that is the whole point of the invariant below.
+fn mla_block_n(g: &ShardedGguf, b: usize, c: &Ctx, xs: &[Vec<f64>]) -> anyhow::Result<Vec<Vec<f64>>> {
+    let n = xs.len();
+    let heads = c.heads;
+    let hd = 256usize;
+    let lat = 512usize;
+    let mv = |w: &[f32], xv: &[f64], k: usize, nn: usize| -> Vec<f64> {
+        (0..nn).map(|r| (0..k).map(|cc| w[r * k + cc] as f64 * xv[cc]).sum()).collect()
+    };
+    let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
+    let nw: Vec<f64> = norm_w.iter().map(|v| *v as f64).collect();
+    let wqa = g.dequant_name(&format!("blk.{b}.attn_q_a.weight"))?;
+    let wqb = g.dequant_name(&format!("blk.{b}.attn_q_b.weight"))?;
+    let wkva = g.dequant_name(&format!("blk.{b}.attn_kv_a_mqa.weight"))?;
+    let wkb = g.dequant_name(&format!("blk.{b}.attn_k_b.weight"))?;
+    let wvb = g.dequant_name(&format!("blk.{b}.attn_v_b.weight"))?;
+    let wo = g.dequant_name(&format!("blk.{b}.attn_output.weight"))?;
+
+    let mut qs = Vec::with_capacity(n);
+    let mut ks = Vec::with_capacity(n);
+    let mut vs = Vec::with_capacity(n);
+    for t in 0..n {
+        let xin = gated_rms_norm(&xs[t], &nw, &vec![1.0; c.d], c.eps);
+        let qa = mv(&wqa, &xin, c.d, 1536);
+        qs.push(mv(&wqb, &qa, 1536, heads * hd));
+        let kva = mv(&wkva, &xin, c.d, lat);
+        let mut k = vec![0.0f64; heads * hd];
+        let mut v = vec![0.0f64; heads * hd];
+        for h in 0..heads {
+            for r in 0..hd {
+                let mut ak = 0.0;
+                let mut av = 0.0;
+                for cc in 0..lat {
+                    ak += wkb[(h * hd + r) * lat + cc] as f64 * kva[cc];
+                    av += wvb[(h * hd + r) * lat + cc] as f64 * kva[cc];
+                }
+                k[h * hd + r] = ak;
+                v[h * hd + r] = av;
+            }
+        }
+        ks.push(k);
+        vs.push(v);
+    }
+    let mut out = Vec::with_capacity(n);
+    for t in 0..n {
+        let mut o = vec![0.0f64; heads * hd];
+        for h in 0..heads {
+            // scores against s <= t only
+            let mut sc = Vec::with_capacity(t + 1);
+            for s in 0..=t {
+                let mut acc = 0.0;
+                for r in 0..hd {
+                    acc += qs[t][h * hd + r] * ks[s][h * hd + r];
+                }
+                sc.push(acc / (hd as f64).sqrt());
+            }
+            let mx = sc.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let ex: Vec<f64> = sc.iter().map(|v| (v - mx).exp()).collect();
+            let z: f64 = ex.iter().sum();
+            for s in 0..=t {
+                let w = ex[s] / z;
+                for r in 0..hd {
+                    o[h * hd + r] += w * vs[s][h * hd + r];
+                }
+            }
+        }
+        out.push(mv(&wo, &o, heads * hd, c.d));
+    }
+    Ok(out)
+}
+
 fn main() -> anyhow::Result<()> {
     let path = PathBuf::from(std::env::args().nth(1).ok_or_else(|| anyhow::anyhow!("usage: prefill_kda <gguf>"))?);
     let g0 = GgufFile::open(&path)?;
@@ -103,5 +178,17 @@ fn main() -> anyhow::Result<()> {
     println!("position 0 after block 0: |1-token - 2-token| = {diff:.3e}");
     anyhow::ensure!(diff < 1e-12, "the two-token prefill CHANGED position 0 by {diff:.3e} -- attention is not causal");
     println!("PASS: position 0 is identical whether or not a later token is present -- the recurrence is causal");
+
+    // THE SAME INVARIANT ON THE MLA PATH, at block 3 (the first MLA block per the file's own schedule).
+    let mla = plan.iter().position(|b| b.attn == engine_core::glm53_plan::Attn::Mla)
+        .ok_or_else(|| anyhow::anyhow!("no MLA block in this checkpoint"))?;
+    let e0 = vec![embed(&g, &v, ids[0], c.d)?];
+    let e01 = vec![embed(&g, &v, ids[0], c.d)?, embed(&g, &v, ids[1], c.d)?];
+    let m1 = mla_block_n(&g, mla, &c, &e0)?;
+    let m2 = mla_block_n(&g, mla, &c, &e01)?;
+    let dm = m1[0].iter().zip(&m2[0]).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+    println!("MLA block {mla}: position 0 |1-token - 2-token| = {dm:.3e}");
+    anyhow::ensure!(dm < 1e-12, "MLA attention leaked the future: {dm:.3e}");
+    println!("PASS: MLA position 0 is also independent of a later token -- attention is causal");
     Ok(())
 }
