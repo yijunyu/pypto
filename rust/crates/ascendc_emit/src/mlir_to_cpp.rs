@@ -1617,9 +1617,11 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         }
         if line.contains("@__tile_matvec_w8a8_f32") {
             // int8 weight row (k), HALF staged (k), f32 (k), offset-subtract (k),
-            // product (k), reduce work (k/2), cell (8), out (n). EIGHT, and the
-            // declarations are generated from this count.
-            vec_buf_count += 8;
+            // product (k), reduce work (k/2), cell (8), out (n), scale plane (n),
+            // offset plane (n). TEN, and the declarations are generated from this
+            // count -- which is why adding the two plane buffers to the arm without
+            // raising this number emitted references to undeclared `buf9`/`buf10`.
+            vec_buf_count += 10;
         }
         if line.contains("@__tile_matvec_q8_0_gm_f32") {
             // x (k) comes from the load's buffer, out (n) is this arm's only allocation.
@@ -8812,6 +8814,13 @@ fn generate_vector_compute_code(
                                 let out = buf_counter;
                                 buf_counter += 1;
                                 buf_sizes.insert(out, nb(n_expr.clone()));
+                                // THE PLANES AS TILES, not row-indexed scalar GM reads.
+                                let ts = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(ts, nb(n_expr.clone()));
+                                let to = buf_counter;
+                                buf_counter += 1;
+                                buf_sizes.insert(to, nb(n_expr.clone()));
                                 writeln!(
                                     code,
                                     r#"{{ // tile_matvec_w8a8: y[i] = sum_k a[k] * ((q - off[i]) * sc[i])
@@ -8820,6 +8829,10 @@ fn generate_vector_compute_code(
   // on the first iteration and the kernel never starts -- which is exactly what the first
   // attempt at this fix did.
   AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
+  AscendC::DataCopy(buf{ts}, gm{si}Tensor, __n);
+  AscendC::DataCopy(buf{to}, gm{oi}Tensor, __n);
+  AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(EVENT_ID0);
+  AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(EVENT_ID0);
   for (int __i = 0; __i < __n; ++__i) {{
     // THREE dependencies, not two. MTE2->V orders the copy-in before the cast, V->S orders
     // the reduction before the scalar readback -- and V->MTE2 orders the NEXT row's copy
@@ -8836,8 +8849,8 @@ fn generate_vector_compute_code(
     AscendC::PipeBarrier<PIPE_V>();
     AscendC::Cast(buf{wf}, buf{hf}, AscendC::RoundMode::CAST_NONE, __k);
     AscendC::PipeBarrier<PIPE_V>();
-    const float __sc = ((__gm__ float *)gm{si}Tensor.GetPhyAddr())[__i];
-    const float __off = ((__gm__ float *)gm{oi}Tensor.GetPhyAddr())[__i];
+    const float __sc = buf{ts}.GetValue(__i);
+    const float __off = buf{to}.GetValue(__i);
     AscendC::Adds(buf{sh}, buf{wf}, -__off, __k);
     AscendC::PipeBarrier<PIPE_V>();
     AscendC::Muls(buf{wf}, buf{sh}, __sc, __k);

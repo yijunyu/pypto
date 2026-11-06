@@ -117,6 +117,7 @@ W8A8_MV = [
     # `KernelDispatcher::matvec_f32` finds no binding and falls back to the CPU otherwise.
     ("w8a8_experts_1x2048_k4096", 4096, 2048),
     ("w8a8_experts_1x4096_k2048", 2048, 4096),
+    ("w8a8_probe_1x1536_k4096", 4096, 1536),
     # k=8192 uses the CHUNKED arm: the non-chunked one needs eight k-wide buffers and is
     # refused as a UB overflow, and its earlier "successful" emission only fit by aliasing
     # them (25 of 4096 outputs +inf). The chunked form keeps every buffer CHUNK-wide, so k
