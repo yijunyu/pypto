@@ -9213,12 +9213,30 @@ fn generate_vector_compute_code(
                         let rows_expr = resolve_value(&args[2], &values);
                         let cols_expr = resolve_value(&args[3], &values);
                         // Row scratch, scalar result cell, and the (rows, 1) output.
+                        // THE WORK BUFFER HAS A FLOOR. `ReduceSum([1x8])` needs far more scratch
+                        // than 8 elements: sized at `cols` it was 32 B, and the attention stage
+                        // that reduces 8 softmax scores faulted the device (507035) while the
+                        // same arm at cols=512 worked. 256 elements = 1 KiB, comfortably above the
+                        // 8-element floor the old comment assumed.
+                        // The floor must be a LITERAL, not `max(...)`: the sizer cannot fold a
+                        // `max(` expression, so the buffers went UNFOLDABLE and the whole unified
+                        // buffer was split evenly again (30240 B each, 188256 B total).
+                        // `resolve_const_value` yields a LITERAL when the operand is a constant, so
+                        // the floor can be decided here and written as a plain number. A `max(`
+                        // expression is not foldable by the sizer and silently made every buffer
+                        // UNFOLDABLE, which is how this round's first attempt got worse.
+                        let cols_lit = resolve_const_value(&args[3], &values, &analysis.values);
+                        let work_elems = if cols_lit.trim().parse::<usize>().map(|n| n >= 256).unwrap_or(false) {
+                            format!("(({}) + 7) / 8 * 8", cols_lit)
+                        } else {
+                            "256".to_string()
+                        };
                         let work = buf_counter;
                         buf_counter += 1;
-                        buf_sizes.insert(work, format!("(({}) + 7) / 8 * 8", cols_expr));
+                        buf_sizes.insert(work, work_elems.clone());
                         let rwork = buf_counter;
                         buf_counter += 1;
-                        buf_sizes.insert(rwork, format!("(({}) + 7) / 8 * 8", cols_expr));
+                        buf_sizes.insert(rwork, work_elems);
                         let cell = buf_counter;
                         buf_counter += 1;
                         buf_sizes.insert(cell, "8".to_string());
