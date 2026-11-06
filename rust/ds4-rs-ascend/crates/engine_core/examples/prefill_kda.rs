@@ -102,6 +102,7 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
         match plan[b].attn {
             engine_core::glm53_plan::Attn::Mla => {
                 let outs = mla_block_n(g, b, c, &x)?;
+                println!("MLA-TENSOR prefill blk{b}: {:?}", &outs[0][..3]);
                 for t in 0..n {
                     for i in 0..c.d {
                         x[t][i] += outs[t][i];
@@ -153,9 +154,12 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                     // reading), and the real output gate for the block.
                     beta: {
                         let raw = g.dequant_name(&format!("blk.{b}.kda_beta.weight"))?;
+                        let xin0 = gated_rms_norm(&x[0], &nw, &vec![1.0; c.d], c.eps);
                         (0..c.heads)
                             .map(|h| {
-                                let z: f64 = (0..c.d).map(|cc| raw[cc * c.heads + h] as f64 * x[0][cc]).sum();
+                                // THE NORMALISED input, matching the decode driver. Using the raw residual here made the two drivers
+                                // differ by 0.1% at the MLA output, which compounds to a different token over six blocks.
+                                let z: f64 = (0..c.d).map(|cc| raw[cc * c.heads + h] as f64 * xin0[cc]).sum();
                                 1.0 / (1.0 + (-z).exp())
                             })
                             .collect()

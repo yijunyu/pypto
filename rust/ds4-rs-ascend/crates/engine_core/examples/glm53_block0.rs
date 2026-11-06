@@ -202,6 +202,7 @@ fn main() -> anyhow::Result<()> {
     for b in 0..upto {
         if plan[b].attn == Attn::Mla {
             let op = mla_block_1token(&g, b, &x, d, cfg.rms_norm_eps as f64)?;
+            println!("MLA-TENSOR decode blk{b}: {:?}", &op[..3]);
             for i in 0..d { x[i] += op[i]; }
             let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
             println!("block {b}: MLA, rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
