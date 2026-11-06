@@ -106,7 +106,7 @@ fn dequant_either(g: &ShardedGguf, b: usize, base: &str) -> anyhow::Result<Vec<f
         format!("blk.{b}.attn_{base}.weight"),
         format!("blk.{b}.ssm_{base}.weight"),
         format!("blk.{b}.ssm_{base}"),
-        format!("blk.{b}.ssm_dt.{base}"), // ssm_dt.bias
+        format!("blk.{b}.ssm_dt.bias"), // Kimi's dt bias
     ] {
         match g.dequant_name(&name) {
             Ok(v) => return Ok(v),
@@ -367,7 +367,7 @@ fn main() -> anyhow::Result<()> {
             // ([4,1,8192]) and beta is [4096,64], neither of which `BlockParams` can hold.
             heads, head_dim,
             a_log: {
-                let raw = dequant_either(&g, b, "a")?;
+                let raw = dequant_either(&g, b, "a_log")?;
                 anyhow::ensure!(raw.len() == heads, "kda_a_log is {} not {heads}", raw.len());
                 raw.iter().map(|v| *v as f64).collect()
             },
@@ -378,7 +378,7 @@ fn main() -> anyhow::Result<()> {
             conv_v: load_conv(&g, b, "kda_v_conv", heads * head_dim)?,
             // THE REAL dt BIAS: kda_dt_bias is [8192], one value per channel.
             dt_bias: {
-                let raw = dequant_either(&g, b, "bias")?;
+                let raw = dequant_either(&g, b, "dt_bias")?;
                 anyhow::ensure!(raw.len() == heads * head_dim, "kda_dt_bias is {} not {}", raw.len(), heads * head_dim);
                 raw.iter().map(|v| *v as f64).collect()
             },
@@ -509,8 +509,11 @@ fn main() -> anyhow::Result<()> {
     }
     anyhow::ensure!(checked == vocab, "only {checked} of {vocab} logits were computed");
     println!("logits: {checked} finite, best {:.4} at id {} (MoE used {moe_used} experts per block)", best.0, best.1);
-    println!("TOKEN from GLM 5.3: {} (vocab {vocab})  ({:.1}s)", best.1, t1.elapsed().as_secs_f64());
+    // THE LABEL NAMES THE MODEL THAT WAS LOADED, not the one the config reader is named after. A Kimi run printed
+    // "TOKEN from GLM 5.3" for a whole round because the string was hardcoded beside a shared code path.
+    let model = if std::env::var_os("DS4_KIMI").is_some() { "Kimi K3" } else { "GLM 5.3" };
+    println!("TOKEN from {model}: {} (vocab {vocab})  ({:.1}s)", best.1, t1.elapsed().as_secs_f64());
     anyhow::ensure!(best.1 < vocab, "token id outside the vocabulary");
-    println!("PASS: GLM 5.3 produced a token from its own weights, through the assembled blocks and its own head");
+    println!("PASS: {model} produced a token from its own weights, through the assembled blocks and its own head");
     Ok(())
 }
