@@ -54,6 +54,16 @@ pub fn offloaded() -> &'static [&'static str] {
 ///
 /// Generic over the inner type so tests can wrap `CpuDispatcher` while production wraps whatever
 /// the server already builds, and so swapping one method never silently changes the others.
+/// One expert's weights in the checkpoint's own layout: int8 codes with a per-output-channel
+/// scale and offset, i.e. exactly what the emitted `w8a8_experts_*` kernels take. Nothing is
+/// dequantised before the launch.
+#[derive(Clone, Debug, Default)]
+pub struct W8a8Expert {
+    pub codes: Vec<i8>,
+    pub scale: Vec<f32>,
+    pub offset: Vec<f32>,
+}
+
 pub struct AscendDispatcher<D: KernelDispatcher> {
     inner: D,
     /// Installed per method. `None` delegates, which is what keeps a working baseline at every
@@ -376,6 +386,59 @@ impl<D: KernelDispatcher> AscendDispatcher<D> {
 
     /// Route the w8a8 expert matvec to a launcher. Separate from `with_matvec_mx4pk` on purpose: the
     /// two sockets take different arguments, so a caller that wants w8a8 experts must say so.
+    /// The w8a8 expert launcher, or a refusal naming what is missing.
+    fn w8a8_launcher(&self) -> anyhow::Result<&std::sync::Arc<dyn KernelLaunch>> {
+        self.matvec_w8a8_experts_launch.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no w8a8 expert launcher: register one with `with_matvec_w8a8_experts` (or \
+                 `with_devices`), otherwise the MoE must stay on the host"
+            )
+        })
+    }
+
+    /// One routed expert's three projections, in the package's OWN w8a8 layout.
+    ///
+    /// No dequantisation on this side: the checkpoint stores int8 codes with a per-output-channel
+    /// scale and offset, which is exactly what the emitted `w8a8_experts_*` kernels take.
+    pub fn moe_routed_step_w8a8(
+        &self,
+        x: &[f32],
+        selected: &[usize],
+        weights: &[f32],
+        planes: &[W8a8Expert; 3],
+        d_ffn: usize,
+    ) -> anyhow::Result<Vec<f32>> {
+        let l = self.w8a8_launcher()?;
+        let (gate_p, up_p, down_p) = (&planes[0], &planes[1], &planes[2]);
+        // The engine's own fold, kept identical to `engine_core::moe::moe_routed_step`:
+        // gate clamps upper-only, up clamps symmetrically, and the routing weight is folded
+        // into `mid` BEFORE the down projection.
+        const CLAMP: f32 = 10.0;
+        let mut acc = vec![0.0f32; x.len()];
+        for (&_e, &w_e) in selected.iter().zip(weights.iter()) {
+            let gate = l.matvec_w8a8_experts(
+                "w8a8_experts_4096_2048", &gate_p.codes, &gate_p.scale, &gate_p.offset, x, d_ffn)?;
+            let up = l.matvec_w8a8_experts(
+                "w8a8_experts_4096_2048", &up_p.codes, &up_p.scale, &up_p.offset, x, d_ffn)?;
+            let mid: Vec<f32> = gate
+                .iter()
+                .zip(&up)
+                .map(|(&g, &u)| {
+                    let g = g.clamp(f32::NEG_INFINITY, CLAMP);
+                    let u = u.clamp(-CLAMP, CLAMP);
+                    let s = g / (1.0 + (-g).exp());
+                    s * u * w_e
+                })
+                .collect();
+            let down = l.matvec_w8a8_experts(
+                "w8a8_experts_2048_4096", &down_p.codes, &down_p.scale, &down_p.offset, &mid, x.len())?;
+            for (a, d) in acc.iter_mut().zip(down) {
+                *a += d;
+            }
+        }
+        Ok(acc)
+    }
+
     pub fn with_matvec_w8a8_experts(mut self, l: Box<dyn KernelLaunch>) -> Self {
         self.matvec_w8a8_experts_launch = Some(std::sync::Arc::from(l));
         self
@@ -530,6 +593,7 @@ impl<D: KernelDispatcher> KernelDispatcher for AscendDispatcher<D> {
     /// selected-only stack — zero transcription of the clamp/weight-fold semantics. Without a
     /// table the call delegates unchanged (synthetic tests pass real slices). The batched
     /// variant needs no override: its default composes `self.moe_routed_step`.
+
     #[allow(clippy::too_many_arguments)]
     fn moe_routed_step(
         &self,
@@ -1231,5 +1295,75 @@ mod expert_device_path_tests {
         // matvec_ref accumulates in f64, the CPU path in f32 — tolerance, not equality; a
         // repack/permute/fold mistake measures O(1) here.
         assert!(worst < 1e-3, "device expert path diverged: {worst:.3e}");
+    }
+}
+
+#[cfg(test)]
+mod w8a8_moe_tests {
+    use super::*;
+    use engine_core::dispatch::CpuDispatcher;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Records how many w8a8 expert launches it saw, and returns a fixed vector so the
+    /// composition can be predicted exactly.
+    struct Counting {
+        calls: Arc<AtomicUsize>,
+        out: Vec<f32>,
+    }
+
+    impl crate::launch::KernelLaunch for Counting {
+        fn name(&self) -> &str { "w8a8-counting" }
+        fn is_device(&self) -> bool { true }
+        fn rms_norm(&self, x: &[f32], w: &[f32], eps: f32) -> anyhow::Result<Vec<f32>> {
+            // required by the trait, unused here: the w8a8 path never calls it
+            Ok(engine_core::forward::rms_norm(x, w, eps))
+        }
+        fn matvec_w8a8_experts(
+            &self,
+            _name: &str,
+            codes: &[i8],
+            scale: &[f32],
+            offset: &[f32],
+            x: &[f32],
+            d_out: usize,
+        ) -> anyhow::Result<Vec<f32>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            // refuse quietly if the caller handed us the wrong planes, so a wiring mistake shows up
+            assert_eq!(scale.len(), d_out, "scale plane must be one per output");
+            assert_eq!(offset.len(), d_out);
+            assert!(!codes.is_empty() && !x.is_empty());
+            Ok(self.out.clone())
+        }
+    }
+
+    /// THE POINT OF THIS TEST: a w8a8 MoE step must go THROUGH the launcher. If the method
+    /// silently fell back to the host, the count would be zero and the assertion would fail --
+    /// which is the difference between "it computes" and "it computes on the device".
+    #[test]
+    fn the_moe_step_actually_calls_the_w8a8_launcher_three_times_per_expert() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let l = Counting { calls: calls.clone(), out: vec![1.0f32; 8] };
+        let dev = AscendDispatcher::new(CpuDispatcher).with_matvec_w8a8_experts(Box::new(l));
+
+        let plane = W8a8Expert { codes: vec![1i8; 16], scale: vec![0.5f32; 8], offset: vec![0.0f32; 8] };
+        let out = dev
+            .moe_routed_step_w8a8(&[0.1f32; 8], &[0, 1], &[0.5, 0.5], &[plane.clone(), plane.clone(), plane], 8)
+            .expect("the launcher is registered, so this must not refuse");
+
+        assert_eq!(out.len(), 8);
+        // three projections per expert, two experts selected
+        assert_eq!(calls.load(Ordering::SeqCst), 6, "gate, up and down for each selected expert");
+    }
+
+    /// And with no launcher it REFUSES rather than quietly computing on the host.
+    #[test]
+    fn without_a_launcher_the_step_refuses_instead_of_falling_back() {
+        let dev = AscendDispatcher::new(CpuDispatcher);
+        let plane = W8a8Expert { codes: vec![1i8; 16], scale: vec![0.5f32; 8], offset: vec![0.0f32; 8] };
+        let err = dev
+            .moe_routed_step_w8a8(&[0.1f32; 8], &[0], &[1.0], &[plane.clone(), plane.clone(), plane], 8)
+            .expect_err("no launcher registered");
+        assert!(format!("{err}").contains("no w8a8 expert launcher"), "got: {err}");
     }
 }
