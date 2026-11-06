@@ -151,6 +151,13 @@ impl<D: KernelDispatcher> AttentionDispatcher for AscendAttentionDispatcher<D> {
         after
     }
 
+    /// ROUTED: the gate and up projections both go through `KernelDispatcher::matvec_f32`; the
+    /// clamp and the SiLU multiply stay here because they are elementwise.
+    ///
+    /// The clamp is DS4-Flash's `deepseek4.swiglu_clamp_shexp` (10.0) and is NOT optional: the CPU
+    /// reference's own comment records that dropping it "silently disagreed with `kernel_swiglu_f32`
+    /// and with antirez's own comment". So it is applied here exactly as there, and the two fidelity
+    /// switches fall back to the reference rather than being re-derived.
     fn shared_expert(
         &self,
         params: &LayerParams,
@@ -160,7 +167,24 @@ impl<D: KernelDispatcher> AttentionDispatcher for AscendAttentionDispatcher<D> {
         shared_dim: u32,
         clamp: f32,
     ) -> Vec<f32> {
-        self.inner.shared_expert(params, ffn_norm, w_gate, w_up, shared_dim, clamp)
+        let switched = std::env::var("DS4_Q8_0_ACT").ok().as_deref() == Some("1")
+            || std::env::var("DS4_MATVEC_F32_FIDELITY").ok().as_deref() == Some("1");
+        if switched {
+            return self.inner.shared_expert(params, ffn_norm, w_gate, w_up, shared_dim, clamp);
+        }
+        let sd = shared_dim as usize;
+        let g = self.kernels.matvec_f32(w_gate, ffn_norm, sd);
+        let u = self.kernels.matvec_f32(w_up, ffn_norm, sd);
+        let mut out = vec![0.0f32; sd];
+        for i in 0..sd {
+            let (gi, ui) = if clamp > 1e-6 {
+                (g[i].min(clamp), u[i].clamp(-clamp, clamp))
+            } else {
+                (g[i], u[i])
+            };
+            out[i] = crate::ffn::silu(gi) * ui;
+        }
+        out
     }
 
     /// ROUTED: the down projection goes through `KernelDispatcher::matvec_f32` (the w8a8 kernels on
@@ -369,5 +393,54 @@ mod outproj_tests {
         // dst slot 0 <- src slot 0, slot 1 <- src slot 1.
         assert!((got[0] - cur_hc[0]).abs() < 1e-6, "{got:?}");
         assert!((got[4] - cur_hc[4]).abs() < 1e-6, "{got:?}");
+    }
+}
+
+#[cfg(test)]
+mod shared_tests {
+    use super::*;
+    use engine_core::dispatch::CpuDispatcher;
+
+    fn params() -> LayerParams {
+        LayerParams {
+            layer_idx: 0, d_embd: 4, n_hc: 2, n_head: 2, head_dim: 2, n_rot: 1, n_lora_q: 4,
+            n_lora_kv: 2, hc_sinkhorn_iter: 1, hc_eps: 1e-6, rms_eps: 1e-6, rope_orig_ctx: 4096,
+            rope_freq_base: 10000.0, rope_freq_scale: 1.0, rope_ext_factor: 0.0,
+            rope_attn_factor: 1.0, compress_ratio: 0, n_out_group: 1,
+        }
+    }
+
+    #[test]
+    fn the_routed_shared_expert_matches_the_reference() {
+        let p = params();
+        let sd = 3usize;
+        let x: Vec<f32> = (0..4).map(|i| (i as f32 - 1.5) * 0.4).collect();
+        let wg: Vec<f32> = (0..sd * 4).map(|i| ((i % 5) as f32 - 2.0) * 0.3).collect();
+        let wu: Vec<f32> = (0..sd * 4).map(|i| ((i % 3) as f32 - 1.0) * 0.2).collect();
+
+        for clamp in [0.0f32, 10.0] {
+            let want = CpuAttentionDispatcher.shared_expert(&p, &x, &wg, &wu, sd as u32, clamp);
+            let got = AscendAttentionDispatcher::new(CpuDispatcher)
+                .shared_expert(&p, &x, &wg, &wu, sd as u32, clamp);
+            for (a, b) in got.iter().zip(&want) {
+                assert!((a - b).abs() <= 1e-5, "clamp {clamp}: {a} vs {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_clamp_actually_clamps() {
+        // Large gate/up inputs with clamp = 1 must be capped, so the result differs from clamp = 0.
+        // A path that ignored `clamp` would pass the equivalence test only if the reference did too,
+        // and the reference has it -- so this pins that MY body reads the parameter rather than
+        // accidentally delegating.
+        let p = params();
+        let sd = 2usize;
+        let x = vec![50.0f32; 4];
+        let wg = vec![1.0f32; sd * 4];
+        let wu = vec![1.0f32; sd * 4];
+        let unclamped = AscendAttentionDispatcher::new(CpuDispatcher).shared_expert(&p, &x, &wg, &wu, sd as u32, 0.0);
+        let clamped = AscendAttentionDispatcher::new(CpuDispatcher).shared_expert(&p, &x, &wg, &wu, sd as u32, 1.0);
+        assert!(unclamped[0] > clamped[0], "clamp did nothing: {} vs {}", unclamped[0], clamped[0]);
     }
 }
