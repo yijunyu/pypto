@@ -13,6 +13,16 @@ fn main() -> anyhow::Result<()> {
             println!("{k} = {}", &s[..s.len().min(90)]);
         }
     }
+    // The hybrid schedule: an MQA/MLA flag per layer. Counting it is the difference between
+    // "Kimi K3 is a hybrid" and knowing HOW MANY of its 93 blocks use which attention.
+    for (k, v) in &g.meta {
+        if k.ends_with("head_count_kv") {
+            if let engine_core::gguf::MetaValue::Array { values, .. } = v {
+                let ones = values.iter().filter(|x| format!("{x:?}").contains("I32(1)")).count();
+                println!("{k}: {} layers, {ones} with kv=1 (MLA), {} with kv=0 (linear/KDA)", values.len(), values.len() - ones);
+            }
+        }
+    }
     println!("--- every tensor of block 0 ---");
     for t in g.tensors.iter().filter(|t| t.name.starts_with("blk.0.")) {
         println!("{} {:?} {:?}", t.name, t.dims, t.ttype);
