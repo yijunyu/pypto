@@ -59,7 +59,8 @@
   "unexpressible_in_the_tile_api": 2,
   "ascendc_refused": 8,
   "tile_rs_refused": 6,
-  "reshaped": 0
+  "reshaped": 0,
+  "device_verified": 8
  },
  "kernels": {
   "argmax_glm53_1x154880": {
