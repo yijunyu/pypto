@@ -48,7 +48,7 @@
   "searched": "for a refused kernel, the tiling tile-search chose instead."
  },
  "totals": {
-  "kernels": 20,
+  "kernels": 21,
   "tile": 20,
   "pto": 12,
   "ascendc": 12,
@@ -60,7 +60,7 @@
   "ascendc_refused": 8,
   "tile_rs_refused": 6,
   "reshaped": 0,
-  "device_verified": 11
+  "device_verified": 12
  },
  "kernels": {
   "argmax_glm53_1x154880": {
@@ -246,6 +246,12 @@
     "max_abs": 0.0,
     "tolerance": 1e-05
    }
+  },
+  "kda_q_glm53_1x8192_k4096": {
+   "tile": "tile/kda_q_glm53_1x8192_k4096.tile",
+   "pto": null,
+   "ascendc": "ascendc/kda_q_glm53_1x8192_k4096.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2: elements=8192 wrong=0 max_abs 6.250e+01 max_rel 2.514e-07 (oracle 15). GLM 5.3s kda_q projection: 8192 outputs (64 heads x 128 head_dim) from k=4096 -- the widest kernel in this campaign and the first above 4096 rows. It needed the plane DMA to be BANDED (2048 rows at a time): whole-plane buffers at this width overflow the unified buffer."
   }
  },
  "tile_rs_removed_2026_11_02": {
