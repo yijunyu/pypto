@@ -276,13 +276,16 @@ pub struct BlockParams {
     pub head_dim: usize,
     /// per-head log-decay (`kda_a_log`, 64 values)
     pub a_log: Vec<f64>,
-    /// conv taps for q, k, v (`kda_{q,k,v}_conv`, 4 each)
-    pub conv_q: [f64; 4],
-    pub conv_k: [f64; 4],
-    pub conv_v: [f64; 4],
+    /// conv taps for q, k, v, PER CHANNEL: `kda_{q,k,v}_conv` are `[4, 1, 8192]`, i.e. four taps for each of the
+    /// `heads * head_dim` channels -- not one set of taps shared by all of them.
+    pub conv_q: Vec<[f64; 4]>,
+    pub conv_k: Vec<[f64; 4]>,
+    pub conv_v: Vec<[f64; 4]>,
     /// per-channel time bias (`kda_dt_bias`, 8192)
     pub dt_bias: Vec<f64>,
-    /// per-head write strength (`kda_beta`, 4096 x 64 -> one value per head)
+    /// per-head write strength. `kda_beta` is `[4096, 64]` (per channel x head); this takes one value per head,
+    /// which is what the recurrence uses -- see the note in the commit about not yet having settled how the
+    /// 4096 rows reduce to a head.
     pub beta: Vec<f64>,
     pub eps: f64,
 }
@@ -303,14 +306,15 @@ pub fn block(params: &BlockParams, q_proj: &[f64], k_proj: &[f64], v_proj: &[f64
     let mut states: Vec<HeadState> = (0..params.heads).map(|_| new_state(d)).collect();
 
     // the convolutions are per CHANNEL across TIME, so they run over the flattened sequence
-    let conv = |x: &[f64], w: &[f64; 4]| -> Vec<f64> {
+    let conv = |x: &[f64], w: &[[f64; 4]]| -> Vec<f64> {
         let mut y = vec![0.0f64; x.len()];
         for ch in 0..x.len() {
-            // only the taps that stay inside this channel's stream contribute
+            // this CHANNEL's own four taps, and only the taps that stay inside the channel's stream
+            let taps = &w[ch % w.len()];
             let mut acc = 0.0;
             for j in 0..4 {
                 if ch >= j * params.heads * d {
-                    acc += w[j] * x[ch - j * params.heads * d];
+                    acc += taps[j] * x[ch - j * params.heads * d];
                 }
             }
             y[ch] = acc;

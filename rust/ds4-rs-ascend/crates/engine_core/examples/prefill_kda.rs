@@ -128,7 +128,11 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                 let flat = |rows: &Vec<Vec<f64>>| -> Vec<f64> { rows.iter().flatten().copied().collect() };
                 let params = BlockParams {
                     heads: c.heads, head_dim: c.head_dim, a_log: vec![0.0; c.heads],
-                    conv_q: [1.0, 0.0, 0.0, 0.0], conv_k: [1.0, 0.0, 0.0, 0.0], conv_v: [1.0, 0.0, 0.0, 0.0],
+                    // THE REAL PER-CHANNEL CONVS. `kda_{q,k,v}_conv` are [4, 1, 8192]: four taps for EACH of the
+            // 8192 channels. Loaded from the file rather than shared.
+            conv_q: load_conv(g, b, "kda_q_conv", c.heads * c.head_dim)?,
+            conv_k: load_conv(g, b, "kda_k_conv", c.heads * c.head_dim)?,
+            conv_v: load_conv(g, b, "kda_v_conv", c.heads * c.head_dim)?,
                     dt_bias: vec![0.0; c.heads * c.head_dim], beta: vec![0.5; c.heads], eps: c.eps,
                 };
                 let onw = vec![1.0f64; c.head_dim];
@@ -169,6 +173,16 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
         }
     }
     Ok(x)
+}
+
+
+/// `kda_*_conv` is [4, 1, C]: the FOUR taps of each of C channels, stored tap-major.
+fn load_conv(g: &ShardedGguf, b: usize, which: &str, channels: usize) -> anyhow::Result<Vec<[f64; 4]>> {
+    let raw = g.dequant_name(&format!("blk.{b}.{which}.weight"))?;
+    anyhow::ensure!(raw.len() == 4 * channels, "{which} is {} not 4 x {channels}", raw.len());
+    Ok((0..channels)
+        .map(|c| [raw[c] as f64, raw[channels + c] as f64, raw[2 * channels + c] as f64, raw[3 * channels + c] as f64])
+        .collect())
 }
 
 fn main() -> anyhow::Result<()> {

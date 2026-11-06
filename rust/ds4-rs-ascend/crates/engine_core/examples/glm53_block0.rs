@@ -120,6 +120,16 @@ fn moe_ffn(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) -> anyhow::
     Ok((acc, used))
 }
 
+
+/// `kda_*_conv` is [4, 1, C]: the FOUR taps of each of C channels, stored tap-major.
+fn load_conv(g: &ShardedGguf, b: usize, which: &str, channels: usize) -> anyhow::Result<Vec<[f64; 4]>> {
+    let raw = g.dequant_name(&format!("blk.{b}.{which}.weight"))?;
+    anyhow::ensure!(raw.len() == 4 * channels, "{which} is {} not 4 x {channels}", raw.len());
+    Ok((0..channels)
+        .map(|c| [raw[c] as f64, raw[channels + c] as f64, raw[2 * channels + c] as f64, raw[3 * channels + c] as f64])
+        .collect())
+}
+
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("usage: glm53_block0 <gguf>"))?;
@@ -219,7 +229,11 @@ fn main() -> anyhow::Result<()> {
                 anyhow::ensure!(raw.len() == heads, "kda_a_log is {} not {heads}", raw.len());
                 raw.iter().map(|v| *v as f64).collect()
             },
-            conv_q: [1.0, 0.0, 0.0, 0.0], conv_k: [1.0, 0.0, 0.0, 0.0], conv_v: [1.0, 0.0, 0.0, 0.0],
+            // THE REAL PER-CHANNEL CONVS. `kda_{q,k,v}_conv` are [4, 1, 8192]: four taps for EACH of the
+            // 8192 channels. Loaded from the file rather than shared.
+            conv_q: load_conv(&g, b, "kda_q_conv", heads * head_dim)?,
+            conv_k: load_conv(&g, b, "kda_k_conv", heads * head_dim)?,
+            conv_v: load_conv(&g, b, "kda_v_conv", heads * head_dim)?,
             dt_bias: vec![0.0; heads * head_dim], beta: vec![0.5; heads],
             eps: cfg.rms_norm_eps as f64,
         };
