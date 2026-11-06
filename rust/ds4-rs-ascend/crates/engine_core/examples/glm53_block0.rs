@@ -126,6 +126,24 @@ fn main() -> anyhow::Result<()> {
         // attn_output is [12288, 7168] for Kimi and [8192, 4096]-shaped for GLM; take the leading d columns
         let op = (0..d).map(|r| (0..8192.min(o.len())).map(|c| (wo.get(r * 8192 + c).copied().unwrap_or(0.0) as f64) * o[c]).sum::<f64>()).collect::<Vec<_>>();
         for i in 0..d { x[i] += op[i]; }
+        // THE DENSE FFN, when the block has one: ffn_norm -> gate/up -> SiLU -> down -> residual. GLM's leading
+        // blocks carry `ffn_gate`/`ffn_up`/`ffn_down` at 12288 wide; the MoE blocks carry stacked experts instead,
+        // which are NOT implemented, so their FFN is skipped and SAID so.
+        if plan[b].ffn == engine_core::glm53_plan::Ffn::Dense {
+            let fnorm_w = g.dequant_name(&format!("blk.{b}.ffn_norm.weight"))?;
+            let fin = engine_core::kda_block::gated_rms_norm(&x, &fnorm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], cfg.rms_norm_eps as f64);
+            let wg = g.dequant_name(&format!("blk.{b}.ffn_gate.weight"))?;
+            let wu = g.dequant_name(&format!("blk.{b}.ffn_up.weight"))?;
+            let wd = g.dequant_name(&format!("blk.{b}.ffn_down.weight"))?;
+            let inter = wg.len() / d;
+            let g_: Vec<f64> = (0..inter).map(|r| (0..d).map(|c| wg[r * d + c] as f64 * fin[c]).sum()).collect();
+            let u_: Vec<f64> = (0..inter).map(|r| (0..d).map(|c| wu[r * d + c] as f64 * fin[c]).sum()).collect();
+            let act: Vec<f64> = g_.iter().zip(&u_).map(|(a, b_)| (a / (1.0 + (-a).exp())) * b_).collect();
+            let dn: Vec<f64> = (0..d).map(|r| (0..act.len()).map(|c| wd[r * act.len() + c] as f64 * act[c]).sum()).collect();
+            for i in 0..d { x[i] += dn[i]; }
+        } else {
+            println!("  block {b}: FFN is {:?} and not implemented -- skipped, so this block is attention-only", plan[b].ffn);
+        }
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
         println!("block {b}: rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
         anyhow::ensure!(x.iter().all(|v| v.is_finite()), "the residual after block {b} is not finite");
