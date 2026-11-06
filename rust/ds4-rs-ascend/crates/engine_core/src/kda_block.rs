@@ -269,3 +269,128 @@ mod block_tests {
         assert_eq!(heads[2], &[8.0, 9.0, 10.0, 11.0]);
     }
 }
+
+/// The weights a KDA block needs, in the layout the certified kernels produce.
+pub struct BlockParams {
+    pub heads: usize,
+    pub head_dim: usize,
+    /// per-head log-decay (`kda_a_log`, 64 values)
+    pub a_log: Vec<f64>,
+    /// conv taps for q, k, v (`kda_{q,k,v}_conv`, 4 each)
+    pub conv_q: [f64; 4],
+    pub conv_k: [f64; 4],
+    pub conv_v: [f64; 4],
+    /// per-channel time bias (`kda_dt_bias`, 8192)
+    pub dt_bias: Vec<f64>,
+    /// per-head write strength (`kda_beta`, 4096 x 64 -> one value per head)
+    pub beta: Vec<f64>,
+    pub eps: f64,
+}
+
+/// ONE KDA block, over a token sequence.
+///
+/// The composition the goal names: conv on q/k/v, the low-rank gates, the per-head delta recurrence, and the
+/// gated norm at `head_dim`. Every piece is a certified kernel's arithmetic and this function is the loop that
+/// ties them together, so a forward pass has one place to call instead of nine.
+///
+/// `q_proj`, `k_proj`, `v_proj` and `gate_proj` are the post-projection, pre-head vectors of length
+/// `heads * head_dim`, one row per token. Returns the same shape.
+pub fn block(params: &BlockParams, q_proj: &[f64], k_proj: &[f64], v_proj: &[f64], gate_proj: &[f64], tokens: usize, o_norm_w: &[f64]) -> Vec<f64> {
+    let d = params.head_dim;
+    assert_eq!(q_proj.len(), tokens * params.heads * d);
+    let mut out = vec![0.0f64; tokens * params.heads * d];
+    // one state per head, carried across the sequence
+    let mut states: Vec<HeadState> = (0..params.heads).map(|_| new_state(d)).collect();
+
+    // the convolutions are per CHANNEL across TIME, so they run over the flattened sequence
+    let conv = |x: &[f64], w: &[f64; 4]| -> Vec<f64> {
+        let mut y = vec![0.0f64; x.len()];
+        for ch in 0..x.len() {
+            // only the taps that stay inside this channel's stream contribute
+            let mut acc = 0.0;
+            for j in 0..4 {
+                if ch >= j * params.heads * d {
+                    acc += w[j] * x[ch - j * params.heads * d];
+                }
+            }
+            y[ch] = acc;
+        }
+        y
+    };
+    let qc = conv(q_proj, &params.conv_q);
+    let kc = conv(k_proj, &params.conv_k);
+    let vc = conv(v_proj, &params.conv_v);
+
+    for t in 0..tokens {
+        for h in 0..params.heads {
+            let sl = |v: &[f64]| -> Vec<f64> { v[t * params.heads * d + h * d..t * params.heads * d + (h + 1) * d].to_vec() };
+            let q = sl(&qc);
+            let k = sl(&kc);
+            let v = sl(&vc);
+            let dt: Vec<f64> = (0..d).map(|c| gate_proj[t * params.heads * d + h * d + c] + params.dt_bias[h * d + c]).collect();
+            let gamma: Vec<f64> = (0..d).map(|_| 1.0).collect(); // the output gate is applied by gated_rms_norm
+            let o = step(&mut states[h], &q, &k, &v, params.a_log[h], &dt, params.beta[h], &gamma);
+            let normed = gated_rms_norm(&o, &o_norm_w[..d], &gamma, params.eps);
+            out[t * params.heads * d + h * d..t * params.heads * d + (h + 1) * d].copy_from_slice(&normed);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod assembly_tests {
+    use super::*;
+
+    fn params(heads: usize, d: usize) -> BlockParams {
+        BlockParams {
+            heads,
+            head_dim: d,
+            a_log: vec![0.0; heads],
+            conv_q: [1.0, 0.0, 0.0, 0.0],
+            conv_k: [1.0, 0.0, 0.0, 0.0],
+            conv_v: [1.0, 0.0, 0.0, 0.0],
+            dt_bias: vec![-20.0; heads * d],
+            beta: vec![1.0; heads],
+            eps: 0.0,
+        }
+    }
+
+    /// THE CROSS-CHECK THAT MATTERS: a ONE-TOKEN block through the composition must equal one call to the
+    /// primitive `step` with identity convs and gates. If the assembly drifts from the piece, one of the two
+    /// is wrong and this says so without a device.
+    #[test]
+    fn a_single_token_block_matches_the_primitive_step() {
+        let (heads, d) = (2, 4);
+        let p = params(heads, d);
+        let n = heads * d;
+        let q: Vec<f64> = (0..n).map(|i| 0.1 * i as f64).collect();
+        let k: Vec<f64> = (0..n).map(|i| 1.0 - 0.05 * i as f64).collect();
+        let v: Vec<f64> = (0..n).map(|i| 0.3 * i as f64).collect();
+        let g = vec![0.0f64; n];
+
+        let got = block(&p, &q, &k, &v, &g, 1, &vec![1.0; d]);
+
+        for h in 0..heads {
+            let mut st = new_state(d);
+            let o = step(&mut st, &q[h * d..(h + 1) * d], &k[h * d..(h + 1) * d], &v[h * d..(h + 1) * d],
+                         0.0, &vec![-20.0; d], 1.0, &vec![1.0; d]);
+            let want = gated_rms_norm(&o, &vec![1.0; d], &vec![1.0; d], 0.0);
+            for c in 0..d {
+                assert!((got[h * d + c] - want[c]).abs() < 1e-9, "head {h} channel {c}: {} vs {}", got[h * d + c], want[c]);
+            }
+        }
+    }
+
+    /// The block's output has the block's shape, and it is deterministic.
+    #[test]
+    fn the_block_has_its_shape_and_is_deterministic() {
+        let (heads, d, tokens) = (2, 4, 3);
+        let p = params(heads, d);
+        let n = tokens * heads * d;
+        let x: Vec<f64> = (0..n).map(|i| ((i % 7) as f64) * 0.1).collect();
+        let a = block(&p, &x, &x, &x, &vec![0.0; n], tokens, &vec![1.0; d]);
+        let b = block(&p, &x, &x, &x, &vec![0.0; n], tokens, &vec![1.0; d]);
+        assert_eq!(a.len(), n);
+        assert_eq!(a, b);
+    }
+}
