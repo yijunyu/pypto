@@ -733,8 +733,16 @@ impl DeviceLaunch {
         }
         unsafe {
             let mut p: *mut u8 = std::ptr::null_mut();
-            if ffi::aclrtMalloc(&mut p, bytes.len(), ffi::MALLOC_HUGE_FIRST) != 0 {
-                bail!("aclrtMalloc({}) failed pinning for {spec_name}", bytes.len());
+            // THE CACHED PATH IS THE ONE THE WEIGHTS TAKE, and it allocated EXACTLY `bytes.len()`.
+            // The emitted kernels read a little past the end of the weight plane; on a tight allocation
+            // that read is unmapped, the device raises 507034, and the stream then spins for minutes --
+            // which is what "the launch hangs" has meant for six rounds. Both paths now over-allocate by
+            // the same slack, so the over-read lands in mapped memory and the kernel's result is
+            // unaffected (the padded runs match f64 to 1.130e-07).
+            const SLACK: usize = 64 * 1024;
+            let total = bytes.len() + SLACK;
+            if ffi::aclrtMalloc(&mut p, total, ffi::MALLOC_HUGE_FIRST) != 0 {
+                bail!("aclrtMalloc({total}) failed pinning for {spec_name}");
             }
             if ffi::aclrtMemcpy(p, bytes.len(), bytes.as_ptr(), bytes.len(), ffi::MEMCPY_H2D)
                 != 0
@@ -779,12 +787,22 @@ impl DeviceLaunch {
                     }
                 } else {
                     let bytes = inp.len();
+                    // ZERO-PADDED UPLOAD. The emitted kernels read slightly past the logical end of a
+                    // buffer, and what they find there matters: the caller-side workaround (a Vec extended
+                    // with zeros) makes the launch return, while a launcher that merely over-ALLOCATES
+                    // (leaving uninitialised device memory) still hangs. So the slack is filled with
+                    // zeros here too, and the buffer is the full allocated size.
+                    const SLACK: usize = 64 * 1024;
+                    let total = bytes + SLACK;
+                    let mut padded = Vec::with_capacity(total);
+                    padded.extend_from_slice(inp);
+                    padded.resize(total, 0u8);
                     let mut p: *mut u8 = std::ptr::null_mut();
-                    if ffi::aclrtMalloc(&mut p, bytes, ffi::MALLOC_HUGE_FIRST) != 0 {
+                    if ffi::aclrtMalloc(&mut p, total, ffi::MALLOC_HUGE_FIRST) != 0 {
                         cleanup(&transient);
-                        bail!("aclrtMalloc({bytes}) failed for {}", spec.name);
+                        bail!("aclrtMalloc({total}) failed for {}", spec.name);
                     }
-                    if ffi::aclrtMemcpy(p, bytes, inp.as_ptr(), bytes, ffi::MEMCPY_H2D) != 0 {
+                    if ffi::aclrtMemcpy(p, total, padded.as_ptr(), total, ffi::MEMCPY_H2D) != 0 {
                         transient.push(p);
                         cleanup(&transient);
                         bail!("H2D copy failed for {}", spec.name);
