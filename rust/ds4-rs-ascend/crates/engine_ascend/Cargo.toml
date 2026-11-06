@@ -37,6 +37,10 @@ path = "src/bin/ds4_generate.rs"
 ascend = []
 
 [[example]]
+name = "w8a8_expert_down"
+required-features = ["ascend"]
+
+[[example]]
 name = "engine_elf_probe"
 # Needs the CANN runtime: without the feature `with_devices` does not exist, so an unconditional
 # example breaks `cargo test` for everyone who is not building for a device.
