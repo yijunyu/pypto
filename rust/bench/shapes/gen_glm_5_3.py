@@ -119,6 +119,35 @@ def kernels(s):
         )
         out[f"proj_{name}_glm53_{T}x{n}"] = mod(f"glm53_proj_{name}", 5, b)
 
+    # --- 3b. THE KDA PROJECTIONS, at their real widths ----------------------
+    # An earlier note in this file said the tile API could not express the delta-net
+    # path; that was wrong about the PROJECTIONS, which are plain matvecs. They were
+    # missing because the w8a8 arm faulted above ~1280 outputs at k=4096 (iteration
+    # 151 fixed the arm), not because the API could not express them.
+    #   kda_q/k/v : 8192 out from k=4096        (64 heads x 128 head_dim)
+    #   kda_f_a/g_a: 128 out from k=4096        (the low-rank gate down-projections)
+    #   kda_f_b/g_b: 8192 out from k=128        (and back up)
+    for name, n, k in [
+        ("kda_q", 8192, D),
+        ("kda_k", 8192, D),
+        ("kda_v", 8192, D),
+        ("kda_f_a", 128, D),
+        ("kda_g_a", 128, D),
+        ("kda_f_b", 8192, 128),
+        ("kda_g_b", 8192, 128),
+    ]:
+        b = (
+            c("r", 1)
+            + c("kk", k)
+            + c("nn", n)
+            + c("z", 0)
+            + f"""    %x = llvm.call @__tile_load_f32(%arg0, %r, %kk) : (!llvm.ptr<1>, i32, i32) -> i32
+    %res = llvm.call @__tile_matvec_w8a8_f32(%arg1, %arg2, %arg3, %x, %z, %nn, %kk) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32) -> i32
+    llvm.call @__tile_store_f32(%arg4, %res, %r, %nn) : (!llvm.ptr<1>, i32, i32, i32) -> ()
+"""
+        )
+        out[f"{name}_glm53_{T}x{n}_k{k}"] = mod(f"glm53_{name}", 5, b)
+
     # --- 4. the MoE router: one row of D -> N_EXP scores, then top-k ---------
     ne, topk = s["N_EXP"], s["TOPK"]
     b = (

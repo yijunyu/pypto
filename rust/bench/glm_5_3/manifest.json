@@ -259,7 +259,7 @@
   "to_restore": "Thread the valid extent through the emitter instead of the allocated one, then prove on hardware that the store writes one element and not eight. Until that is measured, a refusal is worth more than a kernel that compiles and writes the wrong count."
  },
  "estimated_decode_kernels": {
-  "count": 20,
+  "count": 27,
   "is_lower_bound": true,
   "source": "derived from the model's own configuration by inventory(); a LOWER BOUND, because the inventory predicted 15 for DeepSeek V4 Flash against a registry count of 52, so it under-counts by about 3.5x. Not applied as a correction: one anchor cannot calibrate a model, and a derivation multiplied by 3.5 would look measured and would not be.",
   "what_it_is": "The number of distinct kernels one decode step of this model needs -- the denominator the representation counts are read against. Where the count is KNOWN it is used; where it is not, inventory() derives a LOWER BOUND from the model's own configuration. Not a measurement of a running engine in either case.",
@@ -332,6 +332,7 @@
   },
   "why_collapses_are_listed_not_multiplied": "'under-counts by 3.5x' is one number and tells a reader nothing they can act on. These name the specific rows that each stand for several real kernels. They are not multiplied out: that would turn a list of known omissions into a fabricated total. Someone who knows the true count for this model can see which rows to expand.",
   "published_registry": "the published kernel registry, read 2026-11-02, holds 6 distinct kernels for this model, all of them model-prefixed and all under a `source-scan` basis. That is FEWER than this manifest's derived lower bound, and the registry was generated 2026-08-31, before this architecture's work landed. The derived bound therefore stands: adopting a smaller external figure would lower a bound on the strength of its provenance alone. The 6 is recorded as a floor on model-specific kernels alone.",
-  "published_registry_count": 6
+  "published_registry_count": 6,
+  "note": "27 since 2026-11-06: the seven KDA projections (kda_q/k/v 8192 out from k=4096, f_a/g_a 128 out, f_b/g_b 8192 out from k=128) are real tensors in the model's own file and were missing from the estimate. They could not be emitted before iteration 151 because the w8a8 arm faulted above ~1280 outputs at k=4096 -- the estimate was low because the TOOL was limited, not because the model was smaller."
  }
 }

@@ -36,7 +36,7 @@
   "argmax_k3_1x163840": {
    "tile": "tile/argmax_k3_1x163840.tile",
    "pto": null,
-   "pto_refused": "NPU UB budget (arch a2a3): tile of 81920B at offset 164352B would use 246272B > UB_SIZE 194560B (C1); the live tile working set exceeds the Unified Buffer — reduce tile shapes or free earlier",
+   "pto_refused": "NPU UB budget (arch a2a3): tile of 81920B at offset 164352B would use 246272B > UB_SIZE 194560B (C1); the live tile working set exceeds the Unified Buffer \u2014 reduce tile shapes or free earlier",
    "ascendc": null,
    "ascendc_refused": "UB overflow in kernel 'k3_argmax_163840': buffer 0 needs 163840 elements (655360 bytes), which is larger than the ENTIRE 188416 byte unified buffer. No division of the budget can hold this tile -- it has to be streamed from global memory in chunks, and mlir_to_cpp has no blocked path for this operat"
   },
@@ -57,7 +57,7 @@
   "lm_head_k3_1x163840": {
    "tile": "tile/lm_head_k3_1x163840.tile",
    "pto": null,
-   "pto_refused": "NPU UB budget (arch a2a3): tile of 655360B at offset 0B would use 655360B > UB_SIZE 194560B (C1); the live tile working set exceeds the Unified Buffer — reduce tile shapes or free earlier",
+   "pto_refused": "NPU UB budget (arch a2a3): tile of 655360B at offset 0B would use 655360B > UB_SIZE 194560B (C1); the live tile working set exceeds the Unified Buffer \u2014 reduce tile shapes or free earlier",
    "ascendc": null,
    "ascendc_refused": "UB overflow in kernel 'k3_lm_head_163840': buffer 0 needs 163840 elements (655360 bytes), which is larger than the ENTIRE 188416 byte unified buffer. No division of the budget can hold this tile -- it has to be streamed from global memory in chunks, and mlir_to_cpp has no blocked path for this opera"
   },
@@ -217,7 +217,7 @@
  },
  "what_tile_search_cannot_do": "tile-search decides candidates by running an emitter, and WHICH emitter is now a choice (`--oracle pto|ascendc`) because the two do not agree: the AscendC emitter divides the Unified Buffer into fixed slots, so its limit is per BUFFER where the PTO emitter's is over the live working set. With only the PTO oracle, a kernel refused downstream reported 'nothing to change' -- the right answer to the wrong question.\n\nWhat remains beyond it is a MISSING EMITTER ARM rather than a bound. The router needs __tile_sigmoid_f32, which mlir_to_cpp does not have, and no tiling supplies a missing arm. One kernel here, and the search says so rather than reporting nothing to change.",
  "estimated_decode_kernels": {
-  "count": 21,
+  "count": 28,
   "is_lower_bound": true,
   "source": "derived from the model's own configuration by inventory(); a LOWER BOUND, because the inventory predicted 15 for DeepSeek V4 Flash against a registry count of 52, so it under-counts by about 3.5x. Not applied as a correction: one anchor cannot calibrate a model, and a derivation multiplied by 3.5 would look measured and would not be.",
   "what_it_is": "The number of distinct kernels one decode step of this model needs -- the denominator the representation counts are read against. Where the count is KNOWN it is used; where it is not, inventory() derives a LOWER BOUND from the model's own configuration. Not a measurement of a running engine in either case.",
@@ -293,7 +293,8 @@
    "one sampling kernel": "argmax is counted; top-p, top-k sampling and draft verification are not"
   },
   "why_collapses_are_listed_not_multiplied": "'under-counts by 3.5x' is one number and tells a reader nothing they can act on. These name the specific rows that each stand for several real kernels. They are not multiplied out: that would turn a list of known omissions into a fabricated total. Someone who knows the true count for this model can see which rows to expand.",
-  "published_registry": "the published kernel registry, read 2026-11-02, lists ten models and none of them is this one. It has nothing to say here, and a recorded 0 would read as a measurement of zero rather than an absence. The derived lower bound stands unchallenged."
+  "published_registry": "the published kernel registry, read 2026-11-02, lists ten models and none of them is this one. It has nothing to say here, and a recorded 0 would read as a measurement of zero rather than an absence. The derived lower bound stands unchallenged.",
+  "note": "28 since 2026-11-06: the estimator rule now counts the seven KDA projections (q, k, v to 8192; two low-rank gate down-projections at 128; their two up-projections). Kimi K3 is 69 KDA blocks of 93, so it needs them at least as much as GLM 5.3 does; they are NOT yet emitted into this corpus, so its corpus is 7 short of the estimate -- which is the allowed direction."
  },
  "stored_pto_that_does_not_assemble": {
   "pto/router_sigmoid_topk_k3_1x896_k16.pto": "the stored .pto does NOT assemble: `pto.tci` emits `{descending = ...}` inside the `ins(...)` operand list, where MLIR's parser wants `:`, so ptoas reports `expected ':'`. The attribute belongs on the op. The artefact is kept because it is the reproduction; the byte-identity gate cannot see this, since it compares the emitter's output to the file the emitter wrote and both hold the same invalid text."

@@ -348,6 +348,12 @@ def inventory(s):
     if kda:
         add("second attention core: the gated delta net")
         add("kda short causal convolution")
+        # THE KDA PROJECTIONS. The rule counted the delta core and its convolution and
+        # stopped, so the estimate was seven short: q, k and v to 8192 (64 heads x 128),
+        # the two low-rank gate down-projections at 128, and their two up-projections
+        # back to 8192. They are real tensors in the model's file and were emitted and
+        # certified once the w8a8 arm stopped faulting above ~1280 outputs at k=4096.
+        add("kda projections: q, k, v (to 8192), and the two low-rank gate pairs", 7)
 
     # --- the feed-forward path -------------------------------------------
     if moe:
