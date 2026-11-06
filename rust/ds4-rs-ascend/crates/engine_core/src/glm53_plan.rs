@@ -116,6 +116,38 @@ impl Census {
     }
 }
 
+
+/// The schedule, choosing the SOURCE the checkpoint actually provides.
+///
+/// `head_count_kv` is a per-layer array where the model states its own schedule (Kimi K3: 93 values, 0 for
+/// linear and 1 for MLA; GLM 5.3 does not carry the key at all). Where it exists it is authoritative and the
+/// tensor names are not consulted. Where it does not, the names are, and each model has its own spelling --
+/// GLM 5.3 uses `kda_q` for the delta net, Kimi K3 uses `attn_q`, and both use `attn_q_a` for MLA.
+pub fn schedule_from(
+    tensors: &[crate::gguf::TensorInfo],
+    meta: &[(String, crate::gguf::MetaValue)],
+) -> anyhow::Result<(Vec<BlockPlan>, &'static str)> {
+    // 1. the per-layer array, if the model states one
+    let kv = meta.iter().find(|(k, _)| k.ends_with("attention.head_count_kv")).map(|(_, v)| v);
+    if let Some(crate::gguf::MetaValue::Array { values, .. }) = kv {
+        let n = values.len();
+        let mut out = Vec::with_capacity(n);
+        for b in 0..n {
+            let flag = format!("{:?}", values[b]);
+            let attn = if flag.contains("I32(1)") || flag.contains("U32(1)") { Attn::Mla } else { Attn::Kda };
+            let ffn = if tensors.iter().any(|t| t.name == format!("blk.{b}.ffn_gate_exps.weight")) {
+                Ffn::Moe
+            } else {
+                Ffn::Dense
+            };
+            out.push(BlockPlan { attn, ffn });
+        }
+        return Ok((out, "attention.head_count_kv (per-layer array)"));
+    }
+    // 2. otherwise the tensor names, which differ per model
+    Ok((schedule_of(tensors)?, "tensor names"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

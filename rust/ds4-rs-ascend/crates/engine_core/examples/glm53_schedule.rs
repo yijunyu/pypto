@@ -7,20 +7,25 @@
 //! usage: glm53_schedule <gguf> [gguf ...]
 
 use engine_core::gguf::GgufFile;
-use engine_core::glm53_plan::{schedule_of, Census};
+use engine_core::glm53_plan::{schedule_from, Census};
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
     let paths: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
     anyhow::ensure!(!paths.is_empty(), "usage: glm53_schedule <gguf> [gguf ...]");
     let mut tensors = Vec::new();
+    let mut meta = Vec::new();
     for p in &paths {
         let g = GgufFile::open(p)?;
+        if meta.is_empty() {
+            meta = g.meta.clone();   // the metadata lives in the first shard
+        }
         tensors.extend(g.tensors);
     }
     println!("{} shard(s), {} tensors", paths.len(), tensors.len());
-    let s = schedule_of(&tensors)?;
+    let (s, source) = schedule_from(&tensors, &meta)?;
     let c = Census::of(&s);
+    println!("  schedule source: {source}");
     println!(
         "  {} blocks: {} KDA + {} MLA, {} MoE + {} dense",
         c.blocks, c.kda, c.mla, c.moe, c.dense
