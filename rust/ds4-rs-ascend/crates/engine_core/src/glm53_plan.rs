@@ -21,8 +21,13 @@ pub enum Attn {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ffn {
+    /// An FFN with its own dense projections (`ffn_gate` / `ffn_up` / `ffn_down`).
     Dense,
     Moe,
+    /// NO feed-forward projections of any kind: the block carries `ffn_norm` and nothing else. GLM 5.3's
+    /// leading blocks are like this -- block 0 has `ffn_norm` and no `ffn_gate`, dense or expert -- so calling
+    /// them "dense" was my label rather than the file's shape.
+    None,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,10 +84,13 @@ pub fn schedule_of(tensors: &[crate::gguf::TensorInfo]) -> anyhow::Result<Vec<Bl
         // `blk.<n>.ffn_gate_exps.weight`, `ffn_up_exps`, `ffn_down_exps` (plus `ffn_*_shexp` for the shared
         // one and `exp_probs_b.bias` for the router). My first version looked for `ffn.experts.` and found
         // ZERO MoE blocks in a model whose registry note says 43 of them.
+        let has_dense = g.tensors.iter().any(|t| t.name == format!("blk.{b}.ffn_gate.weight"));
         let ffn = if g.tensors.iter().any(|t| t.name == format!("blk.{b}.ffn_gate_exps.weight")) {
             Ffn::Moe
-        } else {
+        } else if has_dense {
             Ffn::Dense
+        } else {
+            Ffn::None
         };
         out.push(BlockPlan { attn, ffn });
     }
@@ -97,6 +105,7 @@ pub struct Census {
     pub mla: usize,
     pub moe: usize,
     pub dense: usize,
+    pub no_ffn: usize,
 }
 
 impl Census {
@@ -110,6 +119,7 @@ impl Census {
             match b.ffn {
                 Ffn::Moe => c.moe += 1,
                 Ffn::Dense => c.dense += 1,
+                Ffn::None => c.no_ffn += 1,
             }
         }
         c
@@ -137,8 +147,10 @@ pub fn schedule_from(
             let attn = if flag.contains("I32(1)") || flag.contains("U32(1)") { Attn::Mla } else { Attn::Kda };
             let ffn = if tensors.iter().any(|t| t.name == format!("blk.{b}.ffn_gate_exps.weight")) {
                 Ffn::Moe
-            } else {
+            } else if tensors.iter().any(|t| t.name == format!("blk.{b}.ffn_gate.weight")) {
                 Ffn::Dense
+            } else {
+                Ffn::None
             };
             out.push(BlockPlan { attn, ffn });
         }
@@ -179,7 +191,7 @@ mod tests {
         assert_eq!(s.len(), 2);
         assert_eq!(s[0], BlockPlan { attn: Attn::Kda, ffn: Ffn::Moe });
         assert_eq!(s[1], BlockPlan { attn: Attn::Mla, ffn: Ffn::Dense });
-        assert_eq!(Census::of(&s), Census { blocks: 2, kda: 1, mla: 1, moe: 1, dense: 1 });
+        assert_eq!(Census::of(&s), Census { blocks: 2, kda: 1, mla: 1, moe: 1, dense: 1, no_ffn: 0 });
     }
 
     /// A block with neither attention is a REFUSAL, not a default: guessing would silently produce a schedule
