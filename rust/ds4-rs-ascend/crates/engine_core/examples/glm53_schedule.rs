@@ -22,7 +22,23 @@ fn main() -> anyhow::Result<()> {
         }
         tensors.extend(g.tensors);
     }
-    println!("{} shard(s), {} tensors", paths.len(), tensors.len());
+    // COMPLETENESS, from the file names. Kimi K3 ships as `...-NNNNN-of-00014.gguf`; if ten of the fourteen are
+    // present the census below describes an INCOMPLETE model, and the difference matters -- a schedule read from
+    // ten shards is not a schedule, it is a schedule-shaped number. (Ten of fourteen is what is on disk today,
+    // and the feed-forward census was wrong until this check existed.)
+    let expected: usize = paths
+        .iter()
+        .filter_map(|p| p.file_name()?.to_str()?.split("-of-").nth(1))
+        .filter_map(|s| s.trim_end_matches(".gguf").parse().ok())
+        .max()
+        .unwrap_or(paths.len());
+    println!("{} of {} shard(s) present, {} tensors", paths.len(), expected, tensors.len());
+    anyhow::ensure!(
+        paths.len() == expected,
+        "INCOMPLETE checkpoint: {expected} shards expected, {} present. The census below describes what is here, \
+         not the model.",
+        paths.len()
+    );
     let (s, source) = schedule_from(&tensors, &meta)?;
     let c = Census::of(&s);
     println!("  schedule source: {source}");
