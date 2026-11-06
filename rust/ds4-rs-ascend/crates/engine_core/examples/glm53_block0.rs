@@ -53,6 +53,11 @@ fn mla_block_1token(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) ->
     Ok(mv(&wo, &vcat, 16384, d))
 }
 
+/// How many blocks to run: all of them unless GLM53_BLOCKS says otherwise.
+fn env_blocks() -> usize {
+    std::env::var("GLM53_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX)
+}
+
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("usage: glm53_block0 <gguf>"))?;
@@ -91,7 +96,7 @@ fn main() -> anyhow::Result<()> {
     let first_mla = plan.iter().position(|b| b.attn == Attn::Mla).unwrap_or(plan.len());
     println!("running blocks 0..{} of {}", plan.len().min(4), plan.len());
     let t0 = std::time::Instant::now();
-    let upto = plan.len().min(4);
+    let upto = plan.len().min(env_blocks());
     for b in 0..upto {
         if plan[b].attn == Attn::Mla {
             let op = mla_block_1token(&g, b, &x, d, cfg.rms_norm_eps as f64)?;
