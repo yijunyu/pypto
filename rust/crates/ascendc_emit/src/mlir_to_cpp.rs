@@ -6117,6 +6117,10 @@ fn generate_vector_compute_code(
                             code,
                             r#"{{ // tile_row_axpy2: acc += w[win] * src[row][:]
   AscendC::PipeBarrier<PIPE_ALL>();
+  // V->S: the weight scalar is read on the scalar pipe; the tile it comes from was written by a
+  // vector op (`exp` in the attention kernel).
+  AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID2);
+  AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID2);
   int __a2_win = ({win}); int __a2_row = ({row}); int __a2_cols = ({cols});
   AscendC::Muls(buf{t}[0], buf{s}[__a2_row * __a2_cols], buf{w}.GetValue(__a2_win), __a2_cols);
   AscendC::PipeBarrier<PIPE_V>();
@@ -6161,6 +6165,8 @@ fn generate_vector_compute_code(
                             code,
                             r#"{{ // tile_row_axpy: acc += w[row] * src[row][:]
   AscendC::PipeBarrier<PIPE_ALL>();
+  AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID2);
+  AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID2);
   int __ax_row = ({row}); int __ax_cols = ({cols});
   // `Muls` + `Add` rather than `Axpy`: AscendC's Axpy has no overload in this toolkit that accepts
   // row slices, and these two are already proven on this device by row_scale and the tiles above.
@@ -6213,6 +6219,11 @@ fn generate_vector_compute_code(
                             code,
                             r#"{{ // tile_row_scale: each row times w[row]
   AscendC::PipeBarrier<PIPE_ALL>();
+  // V->S before a SCALAR read of a VECTOR-produced tile. Without it the scalar pipe sees a stale
+  // value -- which is why `row_scale` certified with a DMA-loaded weight tile and then returned
+  // zeros when the weight came from `rsqrt`.
+  AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID2);
+  AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID2);
   int __rs_rows = ({rows}); int __rs_cols = ({cols});
   for (int __r = 0; __r < __rs_rows; ++__r)
     AscendC::Muls(buf{d}[__r * __rs_cols], buf{s}[__r * __rs_cols],
