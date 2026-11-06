@@ -250,6 +250,8 @@ fn main() -> anyhow::Result<()> {
     let g0 = GgufFile::open(&path)?;
     let cfg = DefaultsGlm5::from_gguf(&g0)?;
     let plan = schedule(&g0)?;
+    let expert_scale = engine_core::glm53_ffn::expert_weights_scale(&g0)?;
+    println!("expert_weights_scale = {expert_scale} (read from the file)");
     let v = Vocab::from_gguf(&g0)?;
     let g = ShardedGguf::open(&path)?;
     let c = Ctx { d: cfg.hidden_size, heads: 64, head_dim: 128, eps: cfg.rms_norm_eps as f64 };

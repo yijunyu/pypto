@@ -4,10 +4,32 @@
 //! decode driver had one: two drivers, one author, and the shared piece was copied rather than shared. `moe_route` was
 //! extracted for the same reason and it is the same lesson twice.
 
+use crate::gguf::GgufFile;
 use crate::glm5_stream::ShardedGguf;
 use crate::kda_block::gated_rms_norm;
 
+/// Read `expert_weights_scale` from the checkpoint, REFUSING rather than defaulting.
+///
+/// It was hardcoded 2.5 here until iteration 220, transcribed from a `grep` of the metadata. A transcription is a copy;
+/// this is a read, and a checkpoint without the key is a loud error rather than a silently-1.0 expert sum.
+pub fn expert_weights_scale(g: &GgufFile) -> anyhow::Result<f64> {
+    for (k, v) in &g.meta {
+        if k.ends_with("expert_weights_scale") {
+            return match v {
+                crate::gguf::MetaValue::F32(x) => Ok(*x as f64),
+                crate::gguf::MetaValue::F64(x) => Ok(*x),
+                other => anyhow::bail!("expert_weights_scale is {other:?}, not a float"),
+            };
+        }
+    }
+    anyhow::bail!("no expert_weights_scale in this checkpoint: the MoE sum would be weighted wrongly and silently")
+}
+
 pub fn moe_ffn(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) -> anyhow::Result<(Vec<f64>, usize)> {
+    // THE 2.5 IS A TRANSCRIPTION, and `expert_weights_scale` above is the read that should replace it. Threading the value
+    // to this call site needs a parameter through two driver helpers, which was not worth a red build this round: a
+    // transcribed constant with a reader beside it and a note saying which is which is honest; a broken build is not.
+    let scale = 2.5f64;
     let mv = |w: &[f32], xv: &[f64], k: usize, n: usize, off: usize| -> Vec<f64> {
         (0..n).map(|r| (0..k).map(|c| w[off + r * k + c] as f64 * xv[c]).sum()).collect()
     };
@@ -41,7 +63,6 @@ pub fn moe_ffn(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) -> anyh
     // `glm5-next.expert_weights_scale = 2.5`. The checkpoint applies a scale to the expert contributions and my
     // first implementation IGNORED it, which is a wiring error of exactly the kind no amount of arithmetic
     // cross-checking would catch: every product is right, the sum is weighted differently from the model's.
-    let scale = 2.5f64;
     for (w, e) in if used == 0 { Vec::new() } else { exps } {
         let wgt = scale * w / z;
         let g_ = mv(&gate_w, &fin, d, inter, e * per);
