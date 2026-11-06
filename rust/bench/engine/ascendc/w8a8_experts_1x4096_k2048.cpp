@@ -15,9 +15,9 @@
 #define TILE_OUT_FILL 0
 #endif
 
-class Kernel_proj_w8a8_engine_1x4096_k2048 {
+class Kernel_w8a8_experts_1x4096_k2048 {
 public:
-    __aicore__ inline Kernel_proj_w8a8_engine_1x4096_k2048() {}
+    __aicore__ inline Kernel_w8a8_experts_1x4096_k2048() {}
     __aicore__ inline void Init(GM_ADDR gm0, GM_ADDR gm1, GM_ADDR gm2, GM_ADDR gm3, GM_ADDR gm4) {
         gm0_raw = (uint64_t)(uintptr_t)gm0;
         gm1_raw = (uint64_t)(uintptr_t)gm1;
@@ -124,13 +124,13 @@ private:
     uint64_t gm4_raw;
 };
 
-extern "C" __global__ __aicore__ void proj_w8a8_engine_1x4096_k2048(GM_ADDR gm0, GM_ADDR gm1, GM_ADDR gm2, GM_ADDR gm3, GM_ADDR gm4) {
-    Kernel_proj_w8a8_engine_1x4096_k2048 op;
+extern "C" __global__ __aicore__ void w8a8_experts_1x4096_k2048(GM_ADDR gm0, GM_ADDR gm1, GM_ADDR gm2, GM_ADDR gm3, GM_ADDR gm4) {
+    Kernel_w8a8_experts_1x4096_k2048 op;
     op.Init(gm0, gm1, gm2, gm3, gm4);
     op.Process();
 }
 
 
-extern "C" void proj_w8a8_engine_1x4096_k2048_do(uint32_t blockDim, void *stream, uint8_t *gm0, uint8_t *gm1, uint8_t *gm2, uint8_t *gm3, uint8_t *gm4) {
-    proj_w8a8_engine_1x4096_k2048<<<blockDim, nullptr, stream>>>(gm0, gm1, gm2, gm3, gm4);
+extern "C" void w8a8_experts_1x4096_k2048_do(uint32_t blockDim, void *stream, uint8_t *gm0, uint8_t *gm1, uint8_t *gm2, uint8_t *gm3, uint8_t *gm4) {
+    w8a8_experts_1x4096_k2048<<<blockDim, nullptr, stream>>>(gm0, gm1, gm2, gm3, gm4);
 }

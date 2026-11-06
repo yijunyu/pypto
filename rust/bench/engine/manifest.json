@@ -211,19 +211,6 @@
     "args": 4
    }
   },
-  "proj_w8a8_engine_1x4096_k2048": {
-   "tile": "tile/proj_w8a8_engine_1x4096_k2048.tile",
-   "pto": null,
-   "ascendc": "ascendc/proj_w8a8_engine_1x4096_k2048.cpp",
-   "device_check": "PASS 2026-11-06 on 910B2: wrong=0, max_rel 2.270e-07 against an f64 oracle, 3 launches. The MoE expert w2/down shape (4096 out from k=2048), which the engine's slot table names as `mx4pk_2048_4096` -- a packed-MXFP4 socket. This artefact is w8a8, so it serves the SHAPE and not that socket's format: crediting it needs the deliberate slot switch.",
-   "device_metrics": {
-    "max_rel": 2.27e-07,
-    "repeat": 3,
-    "n": 4096,
-    "k": 2048,
-    "args": 5
-   }
-  },
   "attn_sink_engine_64heads": {
    "tile": "tile/attn_sink_engine_64heads.tile",
    "pto": null,
@@ -234,6 +221,19 @@
     "heads": 64,
     "elements": 32768,
     "tolerance": 1e-05
+   }
+  },
+  "w8a8_experts_1x4096_k2048": {
+   "tile": "tile/w8a8_experts_1x4096_k2048.tile",
+   "pto": null,
+   "ascendc": "ascendc/w8a8_experts_1x4096_k2048.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2: wrong=0, max_rel 2.270e-07 against an f64 oracle, 3 launches. The MoE expert w2/down shape (4096 out from k=2048), which the engine's slot table names as `mx4pk_2048_4096` -- a packed-MXFP4 socket. This artefact is w8a8, so it serves the SHAPE and not that socket's format: crediting it needs the deliberate slot switch.",
+   "device_metrics": {
+    "max_rel": 2.27e-07,
+    "repeat": 3,
+    "n": 4096,
+    "k": 2048,
+    "args": 5
    }
   }
  }

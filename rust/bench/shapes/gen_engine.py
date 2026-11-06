@@ -115,8 +115,8 @@ W8A8_MV = [
     # they are PACKED MXFP4. The deployment quantisation is w8a8, so these rows give those shapes a
     # w8a8 artefact -- which is what moving the MoE onto the device needs, since a dispatch through
     # `KernelDispatcher::matvec_f32` finds no binding and falls back to the CPU otherwise.
-    ("proj_w8a8_engine_1x2048_k4096", 4096, 2048),
-    ("proj_w8a8_engine_1x4096_k2048", 2048, 4096),
+    ("w8a8_experts_1x2048_k4096", 4096, 2048),
+    ("w8a8_experts_1x4096_k2048", 2048, 4096),
     # k=8192 uses the CHUNKED arm: the non-chunked one needs eight k-wide buffers and is
     # refused as a UB overflow, and its earlier "successful" emission only fit by aliasing
     # them (25 of 4096 outputs +inf). The chunked form keeps every buffer CHUNK-wide, so k
