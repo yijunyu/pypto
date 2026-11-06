@@ -171,6 +171,36 @@ def rmsmul_mod(name, body):
     )
 
 
+# The engine's four quantised projections, in the engine's OWN socket shape:
+# `ds4_q8mv_<d_in>_<d_out>(w: si8, s: f32, x: f32, o: f32)` -- four pointers, block scales
+# pre-expanded by the host into an f32 plane (layer0.pto:3).
+Q8MV = [
+    ("proj_q8mv_engine_1x1024_k4096", 4096, 1024),
+    ("proj_q8mv_engine_1x32768_k1024", 1024, 32768),
+    ("proj_q8mv_engine_1x512_k4096", 4096, 512),
+    ("proj_q8mv_engine_1x4096_k8192", 8192, 4096),
+]
+
+
+def q8mv(slot, k, n):
+    body = (
+        c("r", 1)
+        + c("kk", k)
+        + c("nn", n)
+        + '    %z = llvm.mlir.constant(0 : i32) : i32\n'
+        f'    %res = llvm.call @__tile_matvec_q8mv_f32(%w, %s, %x, %z, %nn, %kk) : '
+        f'(!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32) -> i32\n'
+        f'    llvm.call @__tile_store_f32(%o, %res, %r, %nn) : (!llvm.ptr<1>, i32, i32, i32) -> ()\n'
+    )
+    return (
+        "// Engine slot (ds4-rs-ascend): the `ds4_q8mv_<in>_<out>` socket -- four pointers,\n"
+        "// block scales pre-expanded into an f32 plane by the host.\n"
+        "module {\n  llvm.func @" + slot + "(%w: !llvm.ptr<1>, %s: !llvm.ptr<1>, "
+        "%x: !llvm.ptr<1>, %o: !llvm.ptr<1>) attributes {hacc.entry} {\n" + body +
+        "    llvm.return\n  }\n}\n"
+    )
+
+
 def kernels():
     out = {}
     for slot, n in SLOTS:
@@ -201,6 +231,8 @@ def kernels():
             f'    llvm.call @__tile_store_f32(%o, %sc, %r, %cl) : (!llvm.ptr<1>, i32, i32, i32) -> ()'
         )
         out[f"rmsnorm_engine_rmsmul_1x{n}"] = rmsmul_mod(f"engine_rmsmul_1_{n}", body)
+    for slot, k, n in Q8MV:
+        out[slot] = q8mv(slot, k, n)
     for slot, k, n in W8A8_MV:
         # the chunked arm is the one that fits k above the buffer
         out[slot] = w8a8_mv_chunked(slot, k, n) if k > 4096 else w8a8_mv(slot, k, n)

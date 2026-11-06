@@ -1547,10 +1547,11 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
             has_binary_ops = true;
         }
         if line.contains("@__tile_matvec_q8mv_f32") {
-            // w row (k), scale row (k), x row (k), product (k), reduce work (k), HALF staging
-            // (k), cell, out (n). The half buffer is not optional: dav_c220 has no float<-int8
-            // cast, so si8 -> f32 goes through f16.
-            vec_buf_count += 7;
+            // EIGHT buffers: w8 row (k), x row (k), scale row (k), product (k), reduce work (k),
+            // half staging (k), cell, out (n). Declared SEVEN on the first attempt and the kernel
+            // referenced `buf7` without declaring it -- the same count error as iteration 20's
+            // w8a8 arm, which is why the buffer count is now spelled out here by name.
+            vec_buf_count += 8;
         }
         if line.contains("@__tile_matvec_w8a8_gm_f32") {
             // x chunk, int8 chunk, half chunk, f32 chunk, shifted chunk, product chunk,
@@ -8094,10 +8095,14 @@ fn generate_vector_compute_code(
                         };
                         match (idx_of(&w_arg), idx_of(&s_arg), idx_of(&x_arg)) {
                             (Some(wi), Some(si), Some(xi)) => {
+                                // BOTH sides: the GM view AND the staging buffer. Typing only the
+                                // GM side leaves `DataCopy(LocalTensor<float>, GlobalTensor<int8_t>)`
+                                // with no matching overload -- which is how this failed.
                                 gm_elem_types.insert(wi, "int8_t".to_string());
                                 let nb = |sz: String| format!("(({}) + 7) / 8 * 8", sz);
                                 let w8 = buf_counter; buf_counter += 1;
                                 buf_sizes.insert(w8, nb(k_expr.clone()));
+                                buf_elem_types.insert(w8, "int8_t".to_string());
                                 let xb = buf_counter; buf_counter += 1;
                                 buf_sizes.insert(xb, nb(k_expr.clone()));
                                 let sb = buf_counter; buf_counter += 1;
