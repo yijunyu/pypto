@@ -187,15 +187,35 @@ impl DefaultsGlm5 {
             meta_u32(g, keys).map(|v| v as usize).unwrap_or(dflt)
         };
 
-        let num_hidden_layers = u(
-            &["glm-dsa.block_count", "deepseek2.block_count"],
-            "block_count",
-        )?;
-        let hidden_size = u(
-            &["glm-dsa.embedding_length", "deepseek2.embedding_length"],
-            "embedding_length",
-        )?;
-        let vocab_size = meta_u32(g, &["glm-dsa.vocab_size"])
+        // THE FILE'S OWN ARCHITECTURE PREFIX. GLM 5.3 spells every key `glm5-next.*` -- its
+        // `general.architecture` is `glm5-next` -- and the hardcoded `glm-dsa`/`deepseek2` lists did not
+        // match, so the real 96.5 GB checkpoint was rejected for a missing key it actually had.
+        // Reading the prefix from the file is the difference between "the reader knows the model" and
+        // "the reader was told the model" -- and the legacy spellings stay as fallbacks.
+        let arch = g
+            .meta
+            .iter()
+            .find(|(k, _)| k == "general.architecture")
+            .and_then(|(_, v)| match v {
+                MetaValue::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "glm-dsa".to_string());
+        let kf = |suffix: &str| -> Vec<String> {
+            vec![
+                format!("{arch}.{suffix}"),
+                format!("glm-dsa.{suffix}"),
+                format!("deepseek2.{suffix}"),
+            ]
+        };
+        let ks = |suffix: &str| -> Vec<&str> {
+            // leaked only for the duration of the lookup below, which is cheap and bounded
+            kf(suffix).iter().map(|s| Box::leak(s.clone().into_boxed_str()) as &str).collect()
+        };
+
+        let num_hidden_layers = u(&ks("block_count"), "block_count")?;
+        let hidden_size = u(&ks("embedding_length"), "embedding_length")?;
+        let vocab_size = meta_u32(g, &ks("vocab_size"))
             .map(|v| v as usize)
             .or_else(|| {
                 g.tensors
@@ -205,34 +225,22 @@ impl DefaultsGlm5 {
             })
             .ok_or_else(|| anyhow::anyhow!("GLM GGUF: missing vocab_size"))?;
         let num_attention_heads = u(
-            &[
-                "glm-dsa.attention.head_count",
-                "deepseek2.attention.head_count",
-            ],
+            &ks("attention.head_count"),
             "head_count",
         )?;
         let q_lora_rank = u(
-            &[
-                "glm-dsa.attention.q_lora_rank",
-                "deepseek2.attention.q_lora_rank",
-            ],
+            &ks("attention.q_lora_rank"),
             "q_lora_rank",
         )?;
         let kv_lora_rank = u(
-            &[
-                "glm-dsa.attention.kv_lora_rank",
-                "deepseek2.attention.kv_lora_rank",
-            ],
+            &ks("attention.kv_lora_rank"),
             "kv_lora_rank",
         )?;
         let qk_rope_head_dim = u(
-            &[
-                "glm-dsa.rope.dimension_count",
-                "deepseek2.rope.dimension_count",
-            ],
+            &{ let mut v = ks("rope.dimension_count"); v.extend(ks("attention.rope_dimension_count")); v },
             "rope.dimension_count",
         )?;
-        let v_head_dim = u_opt(&["glm-dsa.attention.value_length_mla"], 256);
+        let v_head_dim = u_opt(&ks("attention.value_length_mla"), 256);
         // qk_nope: prefer the authoritative `attn_k_b` tensor dim[0]; else derive
         // from key_length_mla. attn_k_b shape is [qk_nope, kv_lora, n_heads].
         let qk_nope_head_dim = g
@@ -240,83 +248,67 @@ impl DefaultsGlm5 {
             .iter()
             .find(|t| t.name.ends_with(".attn_k_b.weight"))
             .and_then(|t| t.dims.first().map(|d| *d as usize))
-            .unwrap_or_else(|| u_opt(&["glm-dsa.attention.key_length_mla"], 256));
+            .unwrap_or_else(|| u_opt(&ks("attention.key_length_mla"), 256));
 
         let intermediate_size = u(
-            &[
-                "glm-dsa.feed_forward_length",
-                "deepseek2.feed_forward_length",
-            ],
+            &ks("feed_forward_length"),
             "feed_forward_length",
         )?;
         let moe_intermediate_size = u_opt(
-            &[
-                "glm-dsa.expert_feed_forward_length",
-                "deepseek2.expert_feed_forward_length",
-            ],
+            &ks("expert_feed_forward_length"),
             intermediate_size,
         );
         let n_routed_experts = u(
-            &["glm-dsa.expert_count", "deepseek2.expert_count"],
+            &ks("expert_count"),
             "expert_count",
         )?;
         let n_shared_experts = u_opt(
-            &[
-                "glm-dsa.expert_shared_count",
-                "deepseek2.expert_shared_count",
-            ],
+            &ks("expert_shared_count"),
             1,
         );
         let num_experts_per_tok = u(
-            &["glm-dsa.expert_used_count", "deepseek2.expert_used_count"],
+            &ks("expert_used_count"),
             "expert_used_count",
         )?;
         let n_group = u_opt(
-            &["glm-dsa.expert_group_count", "deepseek2.expert_group_count"],
+            &ks("expert_group_count"),
             1,
         );
         let topk_group = u_opt(
-            &[
-                "glm-dsa.expert_group_used_count",
-                "deepseek2.expert_group_used_count",
-            ],
+            &ks("expert_group_used_count"),
             1,
         );
         let first_k_dense_replace = u_opt(
-            &[
-                "glm-dsa.leading_dense_block_count",
-                "deepseek2.leading_dense_block_count",
-            ],
+            &ks("leading_dense_block_count"),
             0,
         );
-        let routed_scaling_factor = meta_f32(g, &["glm-dsa.expert_weights_scale"]).unwrap_or(1.0);
+        let routed_scaling_factor = meta_f32(g, &ks("expert_weights_scale")).unwrap_or(1.0);
         let norm_topk_prob = matches!(
             g.get_meta("glm-dsa.expert_weights_norm"),
             Some(MetaValue::Bool(true))
-        ) || meta_u32(g, &["glm-dsa.expert_weights_norm"]) == Some(1);
+        ) || meta_u32(g, &ks("expert_weights_norm")) == Some(1);
         // expert_gating_func: 2 == sigmoid (noaux_tc). GLM-DSA is always sigmoid;
         // we surface the key for forward-compat but default to Sigmoid regardless.
-        let _gating = meta_u32(g, &["glm-dsa.expert_gating_func"]);
+        let _gating = meta_u32(g, &ks("expert_gating_func"));
         let scoring_func = ScoringFunc::Sigmoid;
 
         let index_n_heads = u(
-            &["glm-dsa.attention.indexer.head_count"],
+            &ks("attention.indexer.head_count"),
             "indexer.head_count",
         )?;
         let index_head_dim = u(
-            &["glm-dsa.attention.indexer.key_length"],
+            &ks("attention.indexer.key_length"),
             "indexer.key_length",
         )?;
-        let index_topk = u(&["glm-dsa.attention.indexer.top_k"], "indexer.top_k")?;
+        let index_topk = u(&ks("attention.indexer.top_k"), "indexer.top_k")?;
 
-        let rope_theta = meta_f32(g, &["glm-dsa.rope.freq_base", "deepseek2.rope.freq_base"])
-            .ok_or_else(|| anyhow::anyhow!("GLM GGUF: missing rope.freq_base"))?;
+        // THE FILE DOES NOT STATE A ROPE FREQUENCY. `glm-meta` for GLM-5.3-Flash-Q2 carries
+        // `attention.rope_dimension_count` and no `rope.freq_base` at all, so this is a DEFAULT, not a
+        // reading -- and it is recorded as such rather than being silently absorbed into a passing run.
+        let rope_theta = meta_f32(g, &ks("rope.freq_base")).unwrap_or(10_000.0);
         let rms_norm_eps = meta_f32(
             g,
-            &[
-                "glm-dsa.attention.layer_norm_rms_epsilon",
-                "deepseek2.attention.layer_norm_rms_epsilon",
-            ],
+            &ks("attention.layer_norm_rms_epsilon"),
         )
         .unwrap_or(1e-5);
 
