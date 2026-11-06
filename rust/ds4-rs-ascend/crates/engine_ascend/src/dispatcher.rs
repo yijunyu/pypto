@@ -1149,6 +1149,24 @@ mod expert_device_path_tests {
             fn rms_norm(&self, _: &[f32], _: &[f32], _: f32) -> anyhow::Result<Vec<f32>> {
                 anyhow::bail!("not under test")
             }
+            /// The w8a8 expert matvec: `out = (codes - offset[row]) * scale[row]) . x`.
+            ///
+            /// The package's own layout -- int8 codes with a per-output-channel scale and offset -- so
+            /// nothing is dequantised before the launch. Default refuses, so a launcher that has no
+            /// device path keeps falling back to the host instead of silently computing something else.
+            fn matvec_w8a8_experts(
+                &self,
+                name: &str,
+                codes: &[i8],
+                scale: &[f32],
+                offset: &[f32],
+                x: &[f32],
+                d_out: usize,
+            ) -> anyhow::Result<Vec<f32>> {
+                let _ = (name, codes, scale, offset, x, d_out);
+                anyhow::bail!("{}: matvec_w8a8_experts is not implemented by this launcher", self.name())
+            }
+
             fn matvec_mx4pk(
                 &self,
                 w: &[u8],

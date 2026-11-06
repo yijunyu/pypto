@@ -943,10 +943,12 @@ impl crate::launch::KernelLaunch for DeviceLaunch {
         // name: **w8a8 expert storage**. Registering w8a8 slot names without this guard would have
         // moved the failure from "not implemented" to "undefined behaviour", which is strictly worse.
         bail!(
-            "matvec_mx4pk: the slot `{}` is a w8a8 socket now, but this launch still marshals packed \
-             MXFP4 (nibble planes, halved scales, permuted x). Serving it needs w8a8 EXPERT STORAGE \
-             -- int8 codes with a per-output-channel scale and offset -- not a different launch.",
-            spec.name
+            "matvec_mx4pk({} out, {} packed bytes): the slot is a w8a8 socket now, but this launch \
+             still marshals packed MXFP4 (nibble planes, halved scales, permuted x). Serving it needs \
+             w8a8 EXPERT STORAGE -- int8 codes with a per-output-channel scale and offset -- not a \
+             different launch.",
+            d_out,
+            w.len()
         );
 
         let d_in = x_perm.len();
@@ -989,6 +991,27 @@ impl crate::launch::KernelLaunch for DeviceLaunch {
             }
         }
     }
+    /// The w8a8 expert matvec: `out[r] = sum_c (codes[r,c] - offset[r]) * scale[r] * x[c]`.
+    ///
+    /// The package's own layout -- int8 codes with a per-output-channel scale and offset -- so nothing
+    /// is dequantised before the launch. Argument order is the KERNEL's: (x, w, scale, offset, out).
+    fn matvec_w8a8_experts(
+        &self,
+        name: &str,
+        codes: &[i8],
+        scale: &[f32],
+        offset: &[f32],
+        x: &[f32],
+        d_out: usize,
+    ) -> Result<Vec<f32>> {
+        let spec = self.spec(name)?;
+        let xb = unsafe { std::slice::from_raw_parts(x.as_ptr() as *const u8, x.len() * 4) };
+        let wb = unsafe { std::slice::from_raw_parts(codes.as_ptr() as *const u8, codes.len()) };
+        let sb = unsafe { std::slice::from_raw_parts(scale.as_ptr() as *const u8, scale.len() * 4) };
+        let ob = unsafe { std::slice::from_raw_parts(offset.as_ptr() as *const u8, offset.len() * 4) };
+        self.run_raw_cached(spec, &[(xb, false), (wb, true), (sb, true), (ob, true)], d_out)
+    }
+
 }
 
 #[cfg(test)]
