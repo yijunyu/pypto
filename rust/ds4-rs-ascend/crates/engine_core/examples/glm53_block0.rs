@@ -200,10 +200,13 @@ fn main() -> anyhow::Result<()> {
     // The tensors the file itself names for block 0 (read, not assumed).
     let wq = dequant_either(&g, 0, "q")?;
     println!("kda_q dequantised: {} values", wq.len());
-    let heads = 64usize;
+    // THE HEAD COUNT COMES FROM THE TENSOR. `kda_q` is [d, heads*head_dim]: 8192 for GLM (64 x 128), 12288 for Kimi
+    // (96 x 128). A hardcoded 64 refused Kimi's weights with "88080384 not 8192 x 7168" -- and my previous attempt at this
+    // line replaced the MLA helper's `heads` instead, which did not compile.
+    let heads = wq.len() / (d * 128);
     let head_dim = 128usize;
     anyhow::ensure!(wq.len() == heads * 128 * d, "kda_q is {} not {heads} x 128 x {d}", wq.len());
-    anyhow::ensure!(heads * head_dim == 8192, "64 heads x 128 must be 8192");
+    anyhow::ensure!(heads * head_dim * d == wq.len(), "kda_q is {wq_len} not {heads} x {head_dim} x {d}", wq_len = wq.len());
 
     // A deterministic input; the VALUES do not matter, the SHAPES and the finiteness do.
     // THE INPUT: a REAL PROMPT, tokenised by the repository's own tokeniser, embedded through `token_embd`.
