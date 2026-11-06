@@ -67,6 +67,23 @@ mod tests {
         assert_eq!(w.iter().map(|(_, e)| *e).collect::<Vec<_>>(), vec![2, 5, 7]);
     }
 
+    /// `scores` reads the FILE's layout: `ffn_gate_inp.weight` is `[d, n_exp]`, so expert e is COLUMN e. A row-major
+    /// misreading would give a different answer for every e, and this case is built so the two readings differ.
+    #[test]
+    fn scores_uses_the_column_of_each_expert() {
+        // d = 2, n_exp = 3; router[c * 3 + e]
+        //   row c=0: [1, 10, 100]      row c=1: [2, 20, 200]
+        let router = vec![1.0f32, 10.0, 100.0, 2.0, 20.0, 200.0];
+        let bias = vec![0.0f32, 0.5, 1.0];
+        let x = vec![1.0f64, 1.0];
+        let got = scores(&router, &bias, &x, 2, 3);
+        // column e dotted with [1,1] + bias[e]:  e=0 -> 1+2+0 = 3 ; e=1 -> 10+20+0.5 = 30.5 ; e=2 -> 100+200+1 = 301
+        assert!((got[0].0 - 3.0).abs() < 1e-6, "expert 0 = {:?}", got[0]);
+        assert!((got[1].0 - 30.5).abs() < 1e-6, "expert 1 = {:?}", got[1]);
+        assert!((got[2].0 - 301.0).abs() < 1e-6, "expert 2 = {:?}", got[2]);
+        assert_eq!(got.iter().map(|(_, e)| *e).collect::<Vec<_>>(), vec![0, 1, 2]);
+    }
+
     /// A non-finite score is REFUSED: `partial_cmp` returns None for NaN, which would silently leave the sort in
     /// an arbitrary order.
     #[test]

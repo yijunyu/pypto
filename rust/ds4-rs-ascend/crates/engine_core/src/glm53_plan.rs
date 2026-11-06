@@ -169,6 +169,35 @@ mod tests {
         TensorInfo { name: name.to_string(), dims: vec![1], ttype: GgmlType::F32, offset: 0 }
     }
 
+    /// `schedule_from` prefers the PER-LAYER ARRAY when the checkpoint carries one, and REPORTS that source. This is the
+    /// path Kimi K3 uses (`attention.head_count_kv`, 0 = linear, 1 = MLA) and it had NO test of its own -- it was only
+    /// ever exercised by running against the real file.
+    #[test]
+    fn the_per_layer_array_wins_and_its_source_is_reported() {
+        use crate::gguf::MetaValue;
+        let tensors = vec![t("blk.0.attn_q.weight"), t("blk.1.attn_q.weight")];
+        let kv = MetaValue::Array {
+            elem_type: crate::gguf::GgufType::U32,
+            len: 2,
+            values: vec![MetaValue::U32(0), MetaValue::U32(1)],
+        };
+        let meta = vec![("kimi.attention.head_count_kv".to_string(), kv)];
+        let (plan, source) = schedule_from(&tensors, &meta).expect("the array path should not need tensor names");
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].attn, Attn::Kda, "0 means linear (KDA)");
+        assert_eq!(plan[1].attn, Attn::Mla, "1 means MLA");
+        assert!(source.contains("head_count_kv"), "the source must name the array, got {source:?}");
+    }
+
+    /// And without the array it falls back to the TENSOR NAMES, saying so -- the GLM path.
+    #[test]
+    fn without_the_array_it_falls_back_to_tensor_names() {
+        let tensors = vec![t("blk.0.kda_q.weight")];
+        let (plan, source) = schedule_from(&tensors, &[]).expect("the name path should work");
+        assert_eq!(plan[0].attn, Attn::Kda);
+        assert!(source.contains("tensor names"), "got {source:?}");
+    }
+
     /// The scan is a function of the NAMES, so a synthetic file proves it without a checkpoint.
     #[test]
     fn the_schedule_is_read_from_tensor_names() {
