@@ -32,16 +32,28 @@ fn main() -> anyhow::Result<()> {
         scale[r] = 0.5 / ((r % 7) + 1) as f32;
         offset[r] = ((r % 5) as f32) - 2.0;
     }
-    let x: Vec<f32> = (0..K).map(|i| ((i % 17) as f32 - 8.0) * 0.01).collect();
+    // PAD EVERY CALLER-SIDE INPUT. `run_raw_cached` allocates each device buffer EXACTLY to the slice it
+    // is handed, and the emitted kernels read slightly past the logical end -- the same over-read that made
+    // the expert launch hang for six rounds before its caller padded. The launcher-side over-allocation
+    // attempted in iteration 144 was reverted because it landed on the wrong call site; until it is done
+    // properly, every caller pads.
+    const PAD: usize = 64 * 1024;
+    let mut x: Vec<f32> = (0..K).map(|i| ((i % 17) as f32 - 8.0) * 0.01).collect();
+    x.extend(std::iter::repeat_n(0.0f32, PAD / 4));
     println!("{d_out} outputs as {bands} bands of {BAND}, k={K}");
 
     let mut got = Vec::with_capacity(d_out);
+    let mut codes = codes;
     for b in 0..bands {
         let lo = b * BAND;
         let hi = lo + BAND;
-        let w = &codes[lo * K..hi * K];
-        let sc = &scale[lo..hi];
-        let of = &offset[lo..hi];
+        // the band's planes, zero-padded to the same slack as x
+        let mut w = codes[lo * K..hi * K].to_vec();
+        w.extend(std::iter::repeat_n(0i8, PAD));
+        let mut sc = scale[lo..hi].to_vec();
+        sc.extend(std::iter::repeat_n(0.0f32, PAD / 4));
+        let mut of = offset[lo..hi].to_vec();
+        of.extend(std::iter::repeat_n(0.0f32, PAD / 4));
         let mut band = dev.run_by_symbol(
             "w8a8_lm_head_band",
             "glm53_proj_output_mix_aiv",
