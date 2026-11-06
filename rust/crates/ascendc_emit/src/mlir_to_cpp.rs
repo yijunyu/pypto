@@ -6001,13 +6001,15 @@ fn generate_vector_compute_code(
                         writeln!(
                             code,
                             r#"{{ // tile_col_expand: one ROW copied down CE_ROWS rows
-  // The source arrives by DMA and these are SCALAR reads: the emitter orders vector ops
-  // against pending copies, not a hand-written loop, so the barrier is explicit here.
+  // VECTORISED, one `Adds` per row into that row's slice. The first attempt was a scalar
+  // SetValue/GetValue loop and the device returned zeros; it also gets no automatic ordering
+  // against the DMA that produced the source, so the barrier is explicit either way.
+  // `Adds(dst, src, 0.0f, n)` is this vocabulary's copy, and a row slice is `buf[i * cols]`.
   AscendC::PipeBarrier<PIPE_ALL>();
   int __ce_rows = ({rows}); int __ce_cols = ({cols});
   for (int __r = 0; __r < __ce_rows; ++__r)
-    for (int __c = 0; __c < __ce_cols; ++__c)
-      buf{d}.SetValue(__r * __ce_cols + __c, buf{s}.GetValue(__c));
+    AscendC::Adds(buf{d}[__r * __ce_cols], buf{s}, 0.0f, __ce_cols);
+  AscendC::PipeBarrier<PIPE_ALL>();
 }}"#,
                             rows = rows_expr,
                             cols = cols_expr,
