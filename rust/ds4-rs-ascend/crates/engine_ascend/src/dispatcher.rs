@@ -386,6 +386,38 @@ impl<D: KernelDispatcher> AscendDispatcher<D> {
 
     /// Route the w8a8 expert matvec to a launcher. Separate from `with_matvec_mx4pk` on purpose: the
     /// two sockets take different arguments, so a caller that wants w8a8 experts must say so.
+    /// One routed-expert step whose planes come STRAIGHT FROM THE PACKAGE.
+    ///
+    /// This is the wiring item (3) names: `moe_routed_step_w8a8` takes planes, and the checkpoint already
+    /// stores them as int8 codes with a per-output-channel scale and offset -- so this reads them, hands
+    /// them over, and dequantises nothing. The package's `(q - offset) * scale` is exactly the kernel's
+    /// arithmetic.
+    pub fn moe_routed_step_from_package(
+        &self,
+        pkg: &engine_core::safetensors::Package,
+        layer: usize,
+        expert: usize,
+        x: &[f32],
+        weight: f32,
+        d_ffn: usize,
+    ) -> anyhow::Result<Vec<f32>> {
+        let prefix = format!("layers.{layer}.ffn.experts.{expert}");
+        let one = |name: &str| -> anyhow::Result<W8a8Expert> {
+            let raw = pkg.raw(&format!("{prefix}.{name}.weight"))?.1;
+            let scale = pkg.f32_tensor(&format!("{prefix}.{name}.weight_scale"))?;
+            let offset = pkg.f32_tensor(&format!("{prefix}.{name}.weight_offset"))?;
+            anyhow::ensure!(
+                scale.len() == offset.len(),
+                "{name}: scale {} != offset {}",
+                scale.len(),
+                offset.len()
+            );
+            Ok(W8a8Expert { codes: raw.iter().map(|&b| b as i8).collect(), scale, offset })
+        };
+        let planes = [one("w1")?, one("w3")?, one("w2")?];
+        self.moe_routed_step_w8a8(x, &[expert], &[weight], &planes, d_ffn)
+    }
+
     /// The w8a8 expert launcher, or a refusal naming what is missing.
     fn w8a8_launcher(&self) -> anyhow::Result<&std::sync::Arc<dyn KernelLaunch>> {
         self.matvec_w8a8_experts_launch.as_ref().ok_or_else(|| {

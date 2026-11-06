@@ -59,7 +59,8 @@ fn main() -> anyhow::Result<()> {
     let weight = 0.75f32;
     const CLAMP: f32 = 10.0;
 
-    let got = dev.moe_routed_step_w8a8(&x, &[0], &[weight], &[w1.clone(), w3.clone(), w2.clone()], d_ffn)?;
+    // THE WIRING ITEM (3) NAMES: planes straight from the package, nothing dequantised, one call.
+    let got = dev.moe_routed_step_from_package(&pkg, layer, 0, &x, weight, d_ffn)?;
 
     // The same composition in f64, through the package's own formula.
     let xf: Vec<f64> = x.iter().map(|&v| v as f64).collect();
