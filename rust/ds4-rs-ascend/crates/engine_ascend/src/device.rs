@@ -200,6 +200,13 @@ pub const DECOMPOSITION_KERNELS: &[KernelSpec] = &[
         symbol: "proj_w8a8_engine_1x1024_k4096_mix_aiv",
         partitioning: Partitioning::ByRow,
     },
+    // The vocabulary band: a certified 4096-output w8a8 matvec at k=4096, used by a caller that
+    // decomposes a 154,880-output head over the OUTPUT dimension (see w8a8_lm_head_banded).
+    KernelSpec {
+        name: "w8a8_lm_head_band",
+        symbol: "glm53_proj_output_mix_aiv",
+        partitioning: Partitioning::ByRow,
+    },
     KernelSpec {
         name: "w8a8_slice_1x512_k4096",
         symbol: "proj_w8a8_engine_1x512_k4096_mix_aiv",
