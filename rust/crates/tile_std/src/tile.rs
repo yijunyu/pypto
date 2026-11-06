@@ -994,6 +994,21 @@ extern "C" {
         cols: u32,
     ) -> u32;
 
+    /// THE ENGINE'S `ds4_q8mv_*` SOCKET: `out[r] = sum_k w8[r,k] * x[k] * s[r,k]`.
+    ///
+    /// `s` is the q8_0 block scales PRE-EXPANDED into a full f32 plane (layer0.pto:3 comments
+    /// "per-element scale sd[r][i]=d[r][i/32]"), so the kernel does no block arithmetic. Four
+    /// pointers in the engine's own order -- w, s, x, o -- which is why a kernel written to this
+    /// signature can carry the mangled `_Z18ds4_q8mv_*` names the engine binds.
+    pub fn __tile_matvec_q8mv_f32(
+        w: *const i8,
+        s: *const f32,
+        x: *const f32,
+        dst: u32,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+
     /// CHUNKED w8a8 matvec: both the activation and the weight come from GM, one K-chunk at
     /// a time, so k may exceed the unified buffer. Same arithmetic as
     /// `__tile_matvec_w8a8_f32`, which needs eight k-wide buffers and refuses k=8192.

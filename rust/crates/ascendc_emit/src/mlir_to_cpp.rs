@@ -246,6 +246,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_matvec_q8_0_gm_f32",
     "__tile_matvec_w8a8_f32",
     "__tile_matvec_w8a8_gm_f32",
+    "__tile_matvec_q8mv_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1544,6 +1545,12 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         if line.contains("@__tile_div_f32") {
             vec_buf_count += 1;
             has_binary_ops = true;
+        }
+        if line.contains("@__tile_matvec_q8mv_f32") {
+            // w row (k), scale row (k), x row (k), product (k), reduce work (k), HALF staging
+            // (k), cell, out (n). The half buffer is not optional: dav_c220 has no float<-int8
+            // cast, so si8 -> f32 goes through f16.
+            vec_buf_count += 7;
         }
         if line.contains("@__tile_matvec_w8a8_gm_f32") {
             // x chunk, int8 chunk, half chunk, f32 chunk, shifted chunk, product chunk,
@@ -8055,6 +8062,98 @@ fn generate_vector_compute_code(
                                 cpp_type: "uint32_t".to_string(),
                             },
                         );
+                    }
+                }
+                continue;
+            }
+
+            // --- __tile_matvec_q8mv_f32: THE ENGINE'S `ds4_q8mv_*` SOCKET, EXACTLY ---
+            //
+            // layer0.pto:3 gives the chain: tload(si8) -> tcvt si8->f16 -> tcvt f16->f32 ->
+            // tmul(x) -> tmul(sd) -> trowsum -> tstore, with the comment
+            // "per-element scale sd[r][i]=d[r][i/32]". So the block scales arrive PRE-EXPANDED
+            // into a full f32 plane and the kernel does no block arithmetic at all:
+            //
+            //   out[r] = sum_k w8[r,k] * x[k] * s[r,k]
+            //
+            // Four arguments (w, s, x, o), matching _Z18ds4_q8mv_4096_1024PaPfS0_S0_.
+            if line.contains("@__tile_matvec_q8mv_f32") {
+                if let Some(result) = extract_result(line) {
+                    let a = extract_call_args(line);
+                    if a.len() >= 6 {
+                        let w_arg = a[0].trim().to_string();
+                        let s_arg = a[1].trim().to_string();
+                        let x_arg = a[2].trim().to_string();
+                        
+                        let n_expr = resolve_value(&a[4], &values);
+                        let k_expr = resolve_value(&a[5], &values);
+                        let idx_of = |arg: &str| {
+                            analysis.gm_args.iter().position(|(_, name)| {
+                                name == arg || format!("%{name}") == arg
+                            })
+                        };
+                        match (idx_of(&w_arg), idx_of(&s_arg), idx_of(&x_arg)) {
+                            (Some(wi), Some(si), Some(xi)) => {
+                                gm_elem_types.insert(wi, "int8_t".to_string());
+                                let nb = |sz: String| format!("(({}) + 7) / 8 * 8", sz);
+                                let w8 = buf_counter; buf_counter += 1;
+                                buf_sizes.insert(w8, nb(k_expr.clone()));
+                                let xb = buf_counter; buf_counter += 1;
+                                buf_sizes.insert(xb, nb(k_expr.clone()));
+                                let sb = buf_counter; buf_counter += 1;
+                                buf_sizes.insert(sb, nb(k_expr.clone()));
+                                let pr = buf_counter; buf_counter += 1;
+                                buf_sizes.insert(pr, nb(k_expr.clone()));
+                                let rw = buf_counter; buf_counter += 1;
+                                buf_sizes.insert(rw, nb(k_expr.clone()));
+                                let cell = buf_counter; buf_counter += 1;
+                                buf_sizes.insert(cell, "8".to_string());
+                                let hf = buf_counter; buf_counter += 1;
+                                buf_sizes.insert(hf, nb(k_expr.clone()));
+                                buf_elem_types.insert(hf, "half".to_string());
+                                let out = buf_counter; buf_counter += 1;
+                                buf_sizes.insert(out, nb(n_expr.clone()));
+                                writeln!(
+                                    code,
+                                    r#"{{ // tile_matvec_q8mv: out[r] = sum_k w8[r,k] * x[k] * s[r,k]
+  int __n = ({n}); int __k = ({k});
+  AscendC::DataCopy(buf{xb}, gm{xi}Tensor, __k);
+  AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
+  AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
+  AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
+  for (int __i = 0; __i < __n; ++__i) {{
+    AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
+    AscendC::DataCopy(buf{w8}, gm{wi}Tensor[__i * __k], __k);
+    AscendC::DataCopy(buf{s}, gm{si}Tensor[__i * __k], __k);
+    AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
+    AscendC::Cast(buf{h}, buf{w8}, AscendC::RoundMode::CAST_NONE, __k);
+    AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
+    AscendC::PipeBarrier<PIPE_V>();
+    AscendC::Cast(buf{p}, buf{h}, AscendC::RoundMode::CAST_NONE, __k);
+    AscendC::PipeBarrier<PIPE_V>();
+    AscendC::Mul(buf{p}, buf{p}, buf{x}, __k);
+    AscendC::PipeBarrier<PIPE_V>();
+    AscendC::Mul(buf{p}, buf{p}, buf{s}, __k);
+    AscendC::PipeBarrier<PIPE_V>();
+    AscendC::ReduceSum(buf{c}, buf{p}, buf{r}, __k);
+    AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
+    buf{o}.SetValue(__i, buf{c}.GetValue(0));
+  }}
+}}"#,
+                                    n = n_expr, k = k_expr,
+                                    xi = xi, wi = wi, si = si,
+                                    w8 = w8, h = hf, x = xb, s = sb, p = pr, r = rw, c = cell, o = out
+                                )
+                                .unwrap();
+                                vec_dirty_bufs.insert(out);
+                                vec_compute_dst_bufs.insert(out);
+                                ssa_to_buf.insert(result.clone(), out);
+                                values.insert(result, CppValue { expr: format!("{out}"), cpp_type: "uint32_t".to_string() });
+                            }
+                            _ => return Err("`__tile_matvec_q8mv_f32` operands must be GM args".to_string()),
+                        }
                     }
                 }
                 continue;
