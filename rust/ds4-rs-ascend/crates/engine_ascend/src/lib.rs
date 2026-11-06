@@ -43,6 +43,7 @@
 
 pub mod attn_device;
 pub mod decode_runner;
+pub mod expert_place;
 pub mod dispatcher;
 
 /// Weight placement: measured free HBM in, a contiguous layer-range plan out.
