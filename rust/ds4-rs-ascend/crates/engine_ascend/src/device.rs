@@ -990,6 +990,24 @@ impl crate::launch::KernelLaunch for DeviceLaunch {
             }
         }
     }
+    fn matvec_w8a8_experts(
+        &self,
+        name: &str,
+        codes: &[i8],
+        scale: &[f32],
+        offset: &[f32],
+        x: &[f32],
+        d_out: usize,
+    ) -> Result<Vec<f32>> {
+        let spec = crate::device::kernel(name)?;
+        // KERNEL argument order: (x, w, scale, offset, out) -- see the declaration in launch.rs.
+        let xb = unsafe { std::slice::from_raw_parts(x.as_ptr() as *const u8, x.len() * 4) };
+        let wb = unsafe { std::slice::from_raw_parts(codes.as_ptr() as *const u8, codes.len()) };
+        let sb = unsafe { std::slice::from_raw_parts(scale.as_ptr() as *const u8, scale.len() * 4) };
+        let ob = unsafe { std::slice::from_raw_parts(offset.as_ptr() as *const u8, offset.len() * 4) };
+        self.run_raw_cached(spec, &[(xb, false), (wb, true), (sb, true), (ob, true)], d_out)
+    }
+
 }
 
 #[cfg(test)]

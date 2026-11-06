@@ -74,6 +74,27 @@ pub trait KernelLaunch: Send + Sync {
     /// no-op for launchers that cache nothing.
     fn invalidate_pins(&self) {}
 
+    /// w8a8 expert matvec: `out[r] = sum_c (codes[r,c] - offset[r]) * scale[r] * x[c]`.
+    ///
+    /// The package's own layout -- int8 codes with a per-output-channel scale and offset -- so nothing is
+    /// dequantised before the launch. This is the launch the engine's two `w8a8_experts_*` slots need;
+    /// the argument order is the KERNEL's: (x, w, scale, offset, out).
+    ///
+    /// Default refuses, like the two below: a launcher with no device path must fall back to the host
+    /// rather than compute something that is not this function.
+    fn matvec_w8a8_experts(
+        &self,
+        name: &str,
+        codes: &[i8],
+        scale: &[f32],
+        offset: &[f32],
+        x: &[f32],
+        d_out: usize,
+    ) -> Result<Vec<f32>> {
+        let _ = (name, codes, scale, offset, x, d_out);
+        bail!("{}: matvec_w8a8_experts is not implemented by this launcher", self.name())
+    }
+
     /// Packed-MXFP4 matvec (`mxfp4_repack` contract: nibble plane, halved even|odd scales,
     /// PERMUTED activation). Default refuses, same reasoning as `matvec_q8`.
     fn matvec_mx4pk(
