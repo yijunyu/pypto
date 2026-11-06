@@ -95,8 +95,12 @@ fn moe_ffn(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) -> anyhow::
     anyhow::ensure!(inter * d == per, "expert plane {per} is not {inter} x {d}");
     let dn_per = dn_w.len() / n_exp;
     let mut acc = vec![0.0f64; d];
+    // `glm5-next.expert_weights_scale = 2.5`. The checkpoint applies a scale to the expert contributions and my
+    // first implementation IGNORED it, which is a wiring error of exactly the kind no amount of arithmetic
+    // cross-checking would catch: every product is right, the sum is weighted differently from the model's.
+    let scale = 2.5f64;
     for (w, e) in if used == 0 { Vec::new() } else { exps } {
-        let wgt = w / z;
+        let wgt = scale * w / z;
         let g_ = mv(&gate_w, &fin, d, inter, e * per);
         let u_ = mv(&up_w, &fin, d, inter, e * per);
         let act: Vec<f64> = g_.iter().zip(&u_).map(|(a, b_)| (a / (1.0 + (-a).exp())) * b_).collect();
