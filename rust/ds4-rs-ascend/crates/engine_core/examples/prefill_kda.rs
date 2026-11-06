@@ -217,6 +217,7 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
             }
             _ => {}
         }
+        if b == 0 { println!("BLK0-TENSOR prefill(after attn+FFN): {:?}", &x[0][..3]); }
     }
     Ok(x)
 }
