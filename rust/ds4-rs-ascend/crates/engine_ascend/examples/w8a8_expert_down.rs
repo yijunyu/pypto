@@ -22,14 +22,15 @@ fn main() -> anyhow::Result<()> {
 
     // 64 KiB of zero slack on every caller-side input (see the note below).
     const PAD: usize = 64 * 1024;
-    let p = format!("layers.{layer}.ffn.experts.{expert}.w2");
+    let plane = std::env::args().nth(5).unwrap_or_else(|| "w2".to_string());
+    let p = format!("layers.{layer}.ffn.experts.{expert}.{plane}");
     let raw = pkg.raw(&format!("{p}.weight"))?.1;
     let scale = pkg.f32_tensor(&format!("{p}.weight_scale"))?;
     let offset = pkg.f32_tensor(&format!("{p}.weight_offset"))?;
     let d_out = scale.len();
     let logical_codes = raw.len();
     let d_in = logical_codes / d_out;
-    println!("w2: {logical_codes} codes, {d_out} outputs, k={d_in}  (caller buffers TIGHT)");
+    println!("{plane}: {logical_codes} codes, {d_out} outputs, k={d_in}  (caller buffers TIGHT)");
     anyhow::ensure!(offset.len() == d_out, "offset {} != outputs {}", offset.len(), d_out);
     anyhow::ensure!(logical_codes == d_out * d_in, "code count is not out*k");
 
