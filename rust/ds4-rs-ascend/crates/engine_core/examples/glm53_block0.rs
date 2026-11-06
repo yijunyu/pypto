@@ -68,7 +68,22 @@ fn env_blocks() -> usize {
 
 /// `kda_*_conv` is [4, 1, C]: the FOUR taps of each of C channels, stored tap-major.
 fn load_conv(g: &ShardedGguf, b: usize, which: &str, channels: usize) -> anyhow::Result<Vec<[f64; 4]>> {
-    let raw = g.dequant_name(&format!("blk.{b}.{which}.weight"))?;
+    // `kda_q_conv` (GLM) and `ssm_conv1d_q` (Kimi) are the same tensor. Hardcoded aliases: a chained `replace` built
+    // "ssm_conv1d_q_conv" and stripped BOTH "_conv"s. (Also re-applied after iteration 254's checkout took it.)
+    let alias = match which {
+        "kda_q_conv" => "ssm_conv1d_q",
+        "kda_k_conv" => "ssm_conv1d_k",
+        "kda_v_conv" => "ssm_conv1d_v",
+        other => other,
+    };
+    let mut raw = None;
+    for name in [format!("blk.{b}.{which}.weight"), format!("blk.{b}.{alias}.weight")] {
+        if let Ok(v) = g.dequant_name(&name) {
+            raw = Some(v);
+            break;
+        }
+    }
+    let raw = raw.ok_or_else(|| anyhow::anyhow!("no conv spelling for {which} in block {b}"))?;
     anyhow::ensure!(raw.len() == 4 * channels, "{which} is {} not 4 x {channels}", raw.len());
     Ok((0..channels)
         .map(|c| [raw[c] as f64, raw[channels + c] as f64, raw[2 * channels + c] as f64, raw[3 * channels + c] as f64])
@@ -82,12 +97,25 @@ fn load_conv(g: &ShardedGguf, b: usize, which: &str, channels: usize) -> anyhow:
 /// `attn_q`/`attn_k`/`attn_v`/`attn_output`. The forward was GLM-spelled throughout and failed on Kimi with
 /// "tensor not found: blk.0.kda_q.weight" -- the same class of mismatch the SCHEDULE hit one round earlier.
 fn dequant_either(g: &ShardedGguf, b: usize, base: &str) -> anyhow::Result<Vec<f32>> {
+    // THREE SPELLINGS AND TWO FORMS. `ssm_a` and `ssm_dt.bias` carry no `.weight` suffix, so the bare name must be
+    // tried as well as the suffixed one. (This resolver had regressed to two spellings after a `git checkout` in
+    // iteration 254 -- the third casualty of that revert, and the reason `ssm_a` was "not found".)
     let mut last = None;
-    for prefix in ["kda_", "attn_"] {
-        let name = format!("blk.{b}.{prefix}{base}.weight");
+    for name in [
+        format!("blk.{b}.kda_{base}.weight"),
+        format!("blk.{b}.attn_{base}.weight"),
+        format!("blk.{b}.ssm_{base}.weight"),
+        format!("blk.{b}.ssm_{base}"),
+        format!("blk.{b}.ssm_dt.{base}"), // ssm_dt.bias
+    ] {
         match g.dequant_name(&name) {
             Ok(v) => return Ok(v),
-            Err(e) => last = Some(e),
+            Err(e) => {
+                if std::env::var_os("SPELL_DEBUG").is_some() {
+                    println!("  spelling {name}: {e}");
+                }
+                last = Some(e);
+            }
         }
     }
     Err(last.unwrap_or_else(|| anyhow::anyhow!("no spelling of {base} in block {b}")))
