@@ -758,6 +758,32 @@ impl DeviceLaunch {
     /// As `run_raw`, but inputs marked `true` are PINNED — uploaded once under their host
     /// identity and reused across launches. Transient inputs and the output keep the
     /// allocate-per-call shape.
+    /// Launch a kernel by SYMBOL, without a named slot.
+    ///
+    /// The slot table (`LAYER0_KERNELS`) describes what the ENGINE's layer code calls, and its denominator
+    /// is the campaign's KPI. A caller-side DECOMPOSITION -- running a certified kernel over 1024-row bands
+    /// because the arm faults above ~1024 rows at k=4096 -- is not an engine slot and must not become one,
+    /// or the denominator grows by a caller's convenience. This entry point is what such a decomposition
+    /// uses instead.
+    ///
+    /// The strings are leaked because `KernelSpec` holds `&'static str`; a decomposition builds a handful of
+    /// these per call site, so the leak is bounded and deliberate rather than a general pattern.
+    pub fn run_by_symbol(
+        &self,
+        name: &str,
+        symbol: &str,
+        partitioning: Partitioning,
+        inputs: &[(&[u8], bool)],
+        out_len: usize,
+    ) -> Result<Vec<f32>> {
+        let spec = KernelSpec {
+            name: Box::leak(name.to_string().into_boxed_str()),
+            symbol: Box::leak(symbol.to_string().into_boxed_str()),
+            partitioning,
+        };
+        self.run_raw_cached(&spec, inputs, out_len)
+    }
+
     fn run_raw_cached(
         &self,
         spec: &KernelSpec,

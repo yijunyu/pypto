@@ -45,8 +45,43 @@ fn main() -> anyhow::Result<()> {
     let mut offset = offset;
     let mut codes: Vec<i8> = raw.iter().map(|&b| b as i8).collect();
 
-    let spec = if d_in == 2048 { "w8a8_experts_2048_4096" } else { "w8a8_experts_4096_2048" };
-    let dev_out = dev.matvec_w8a8_experts(spec, &codes, &scale, &offset, &x, d_out)?;
+    // ROW-SLICED LAUNCH. The arm faults above ~1024 outputs when k=4096 (1024 PASS, 1536 FAULT, 2048
+    // FAULT), so a wider projection is decomposed here into 1024-row bands of the CERTIFIED kernel,
+    // launched by symbol because a caller-side decomposition is not an engine slot.
+    //
+    // 1024-row band of a 4096-wide K: the band's weights are codes[lo*d_in .. hi*d_in], and its scale and
+    // offset are the same rows. The certified kernel takes (x, w, scale, offset, out).
+    let band: usize = if d_in == 4096 { 1024 } else { d_out };
+    let dev_out: Vec<f32> = if d_out > band && d_in == 4096 {
+        println!("slicing {d_out} outputs into {} bands of {band}", d_out.div_ceil(band));
+        let mut out = Vec::with_capacity(d_out);
+        for lo in (0..d_out).step_by(band) {
+            let hi = (lo + band).min(d_out);
+            let rows = hi - lo;
+            anyhow::ensure!(rows == band, "band {lo}..{hi} is {rows} rows, not {band}: the certified kernel is fixed-width");
+            let w = &codes[lo * d_in..hi * d_in];
+            let sc = &scale[lo..hi];
+            let of = &offset[lo..hi];
+            let mut got = dev.run_by_symbol(
+                "w8a8_slice_1x1024_k4096",
+                "proj_w8a8_engine_1x1024_k4096_mix_aiv",
+                engine_ascend::device::Partitioning::ByRow,
+                &[
+                    (unsafe { std::slice::from_raw_parts(x.as_ptr() as *const u8, x.len() * 4) }, false),
+                    (unsafe { std::slice::from_raw_parts(w.as_ptr() as *const u8, w.len()) }, false),
+                    (unsafe { std::slice::from_raw_parts(sc.as_ptr() as *const u8, sc.len() * 4) }, false),
+                    (unsafe { std::slice::from_raw_parts(of.as_ptr() as *const u8, of.len() * 4) }, false),
+                ],
+                band,
+            )?;
+            out.extend_from_slice(&got);
+            got.clear();
+        }
+        out
+    } else {
+        let spec = if d_in == 2048 { "w8a8_experts_2048_4096" } else { "w8a8_experts_4096_2048" };
+        dev.matvec_w8a8_experts(spec, &codes, &scale, &offset, &x, d_out)?
+    };
 
     let mut want = vec![0.0f64; d_out];
     for r in 0..d_out {
