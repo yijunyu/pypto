@@ -5,11 +5,11 @@
  "shapes_source": "rust/ds4-rs-ascend/crates/engine_ascend/src/device.rs LAYER0_KERNELS",
  "generator": "shapes/gen_engine.py",
  "totals": {
-  "kernels": 15,
-  "tile": 15,
+  "kernels": 16,
+  "tile": 16,
   "pto": 0,
-  "ascendc": 15,
-  "device_verified": 15
+  "ascendc": 16,
+  "device_verified": 16
  },
  "kernels": {
   "rope_halves_engine_1x64": {
@@ -222,6 +222,18 @@
     "n": 4096,
     "k": 2048,
     "args": 5
+   }
+  },
+  "attn_sink_engine_64heads": {
+   "tile": "tile/attn_sink_engine_64heads.tile",
+   "pto": null,
+   "ascendc": "ascendc/attn_sink_engine_64heads.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2: heads=64 elements=32768 wrong=0, max_abs 3.644e-10, backward_rel 9.618e-08 against an f64 oracle over ALL 64 heads. The engine's `ds4_attn_sink_batched` extent (64 heads x 512), expressed as ONE scf.for over heads with per-head q/sink/out offsets -- 23 buffers, 80224 B of UB, 16 s.",
+   "device_metrics": {
+    "backward_rel": 9.618e-08,
+    "heads": 64,
+    "elements": 32768,
+    "tolerance": 1e-05
    }
   }
  }
