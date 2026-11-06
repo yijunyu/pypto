@@ -27,20 +27,24 @@ public:
         gm1Tensor.SetGlobalBuffer((__gm__ float*)gm1, 16777216);
         gm2Tensor.SetGlobalBuffer((__gm__ float*)gm2, 16777216);
         gm3Tensor.SetGlobalBuffer((__gm__ float*)gm3, 16777216);
-        pipe.InitBuffer(tbuf0, 32768);
+        pipe.InitBuffer(tbuf0, 8192);
         pipe.InitBuffer(tbuf1, 32768);
         pipe.InitBuffer(tbuf2, 32768);
         pipe.InitBuffer(tbuf3, 32768);
+        pipe.InitBuffer(tbuf4, 32768);
+        pipe.InitBuffer(tbuf5, 32);
+        pipe.InitBuffer(tbuf6, 16384);
+        pipe.InitBuffer(tbuf7, 16384);
     }
     __aicore__ inline void Process() {
         AscendC::LocalTensor<int8_t> buf0 = tbuf0.Get<int8_t>();
         AscendC::LocalTensor<float> buf1 = tbuf1.Get<float>();
         AscendC::LocalTensor<float> buf2 = tbuf2.Get<float>();
-        AscendC::LocalTensor<float> buf3 = tbuf0.Get<float>();
-        AscendC::LocalTensor<float> buf4 = tbuf1.Get<float>();
-        AscendC::LocalTensor<float> buf5 = tbuf2.Get<float>();
-        AscendC::LocalTensor<half> buf6 = tbuf3.Get<half>();
-        AscendC::LocalTensor<float> buf7 = tbuf0.Get<float>();
+        AscendC::LocalTensor<float> buf3 = tbuf3.Get<float>();
+        AscendC::LocalTensor<float> buf4 = tbuf4.Get<float>();
+        AscendC::LocalTensor<float> buf5 = tbuf5.Get<float>();
+        AscendC::LocalTensor<half> buf6 = tbuf6.Get<half>();
+        AscendC::LocalTensor<float> buf7 = tbuf7.Get<float>();
         int32_t __v0;
         int32_t __v1;
         int32_t __v2;
@@ -51,46 +55,35 @@ public:
         __v3 = 0;
         { // tile_matvec_q8mv: out[r] = sum_k w8[r,k] * x[k] * s[r,k]
           int __n = (__v2); int __k = (__v1);
-        pipe_barrier(PIPE_ALL);
           AscendC::DataCopy(buf1, gm2Tensor, __k);
           AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
           AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
           AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
           for (int __i = 0; __i < __n; ++__i) {
             AscendC::WaitFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
-        pipe_barrier(PIPE_ALL);
             AscendC::DataCopy(buf0, gm0Tensor[__i * __k], __k);
-        pipe_barrier(PIPE_ALL);
             AscendC::DataCopy(buf2, gm1Tensor[__i * __k], __k);
             AscendC::SetFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
             AscendC::WaitFlag<AscendC::HardEvent::MTE2_V>(EVENT_ID0);
-        pipe_barrier(PIPE_ALL);
             AscendC::Cast(buf6, buf0, AscendC::RoundMode::CAST_NONE, __k);
             AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
             AscendC::PipeBarrier<PIPE_V>();
-        pipe_barrier(PIPE_ALL);
             AscendC::Cast(buf3, buf6, AscendC::RoundMode::CAST_NONE, __k);
             AscendC::PipeBarrier<PIPE_V>();
-        pipe_barrier(PIPE_ALL);
             AscendC::Mul(buf3, buf3, buf1, __k);
             AscendC::PipeBarrier<PIPE_V>();
-        pipe_barrier(PIPE_ALL);
             AscendC::Mul(buf3, buf3, buf2, __k);
             AscendC::PipeBarrier<PIPE_V>();
-        pipe_barrier(PIPE_ALL);
             AscendC::ReduceSum(buf5, buf3, buf4, __k);
             AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
             AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID0);
-        pipe_barrier(PIPE_ALL);
             buf7.SetValue(__i, buf5.GetValue(0));
           }
         }
         AscendC::PipeBarrier<PIPE_ALL>();
         { const uint32_t __sb = (uint32_t)(((__v0) * (__v2)) * sizeof(float));
-        pipe_barrier(PIPE_ALL);
           if (__sb % 32 == 0) { AscendC::DataCopy(gm3Tensor, buf7, ((__v0) * (__v2))); }
           else { AscendC::DataCopyExtParams __sp{1, __sb, 0, 0, 0};
-        pipe_barrier(PIPE_ALL);
                  AscendC::DataCopyPad(gm3Tensor, buf7, __sp); } }
         return;
     }

@@ -4094,7 +4094,21 @@ fn generate_vector_kernel(
                     .and_then(|s| fold_size(s))
                 {
                     Some(elems) => {
-                        let bytes = ((elems * elem_size) + 31) & !31;
+                        // PER-BUFFER element width. Counting an int8 weight row or a half staging
+                        // buffer at the kernel's f32 width overstates it 2-4x, which is what made
+                        // the q8mv arm at k=8192 report UB overflow once aliasing was correctly
+                        // forbidden. This site and `size_for` must agree, or the emitter either
+                        // overestimates (refusing a fit) or under-estimates (aliasing).
+                        let width = match vctx
+                            .buf_elem_types
+                            .get(&buf_idx)
+                            .map(|s| s.as_str())
+                        {
+                            Some("int8_t") | Some("uint8_t") => 1,
+                            Some("half") | Some("bfloat16_t") | Some("int16_t") => 2,
+                            _ => elem_size,
+                        };
+                        let bytes = ((elems * width) + 31) & !31;
                         // Never above actual need; never below the 32 B floor a
                         // reduce work-buffer wants.
                         map.insert(buf_idx, bytes.max(32));
@@ -4168,6 +4182,27 @@ fn generate_vector_kernel(
                         .unwrap_or(elems * elem_size)
                 } else {
                     elems * elem_size
+                };
+                // THE THIRD SITE. `per_buf_bytes` may be None (the exact-sizing path gave up),
+                // and the check then compares against the even split -- which is a real budget
+                // but not this buffer's need. Use the same per-buffer width here as the other
+                // two sites, or the three disagree and a shape that fits is refused.
+                let width_here = match vctx
+                    .buf_elem_types
+                    .get(&buf_idx)
+                    .map(|s| s.as_str())
+                {
+                    Some("int8_t") | Some("uint8_t") => 1,
+                    Some("half") | Some("bfloat16_t") | Some("int16_t") => 2,
+                    _ => usize::from(elem_size),
+                };
+                let needed = {
+                    let elems_here = vctx
+                        .buf_sizes
+                        .get(&buf_idx)
+                        .and_then(|s| fold_size(s))
+                        .unwrap_or(0);
+                    elems_here * width_here
                 };
                 let budget = per_buf_bytes
                     .as_ref()
@@ -4252,7 +4287,9 @@ fn generate_vector_kernel(
                     }
                 }
             }
-            let _ = &own_bytes;
+            if let Some(b) = own_bytes(buf_idx) {
+                return (b + 31) & !31;
+            }
             per_buf_bytes
                 .as_ref()
                 .and_then(|m| m.get(&buf_idx).copied())
