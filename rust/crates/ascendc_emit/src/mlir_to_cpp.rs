@@ -6037,7 +6037,7 @@ fn generate_vector_compute_code(
             if line.contains("@__tile_fill_f32") {
                 if let Some(result) = extract_result(line) {
                     let args = extract_call_args(line);
-                    if args.len() >= 3 {
+                    if args.len() >= 4 {
                         let scalar = args[1].trim().to_string();
                         let rows_expr = resolve_value(&args[2], &values);
                         let cols_expr = resolve_value(&args[3], &values);

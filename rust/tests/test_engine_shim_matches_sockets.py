@@ -82,7 +82,7 @@ def test_the_shim_mangles_to_the_engine_socket_symbols():
     # The five slots the shim claims, by name.
     for slot in ("rms_norm_4096", "rms_norm_1024", "rms_norm_512", "hc_norm", "rope_halves"):
         assert slot in syms, f"{slot} vanished from device.rs"
-    assert checked == 9, f"expected the shim to cover nine sockets, it declares {checked}"
+    assert checked == 10, f"expected the shim to cover ten sockets, it declares {checked}"
 
 
 def test_the_still_unimplemented_sockets_are_deliberately_uncovered():
@@ -93,8 +93,10 @@ def test_the_still_unimplemented_sockets_are_deliberately_uncovered():
     # out is what has no kernel behind it: packed formats (`hc_mv`, `mx4pk_*`), flash attention,
     # and the grouped MoE.
     fns = shim_functions()
+    # `ds4_attn_sink_batched` LEFT this list when the certified one-head kernel plus a 64-head shim
+    # loop was wired (iteration 89). What remains has no kernel behind it at all.
     for name in ("ds4_hc_mv", "ds4_mx4pk_4096_2048", "ds4_mx4pk_2048_4096",
-                 "ds4_attn_sink_batched", "ds4_gmm_swiglu_quant_16"):
+                 "ds4_gmm_swiglu_quant_16"):
         assert name not in fns, (
             f"{name} is in the shim, but its socket is a packed/quantised format the w8a8 arms "
             f"do not implement -- that is the over-credit iterations 45-46 removed"
