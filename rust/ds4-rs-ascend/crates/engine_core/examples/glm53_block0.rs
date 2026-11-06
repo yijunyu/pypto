@@ -240,7 +240,20 @@ fn main() -> anyhow::Result<()> {
                 anyhow::ensure!(raw.len() == heads * head_dim, "kda_dt_bias is {} not {}", raw.len(), heads * head_dim);
                 raw.iter().map(|v| *v as f64).collect()
             },
-            beta: vec![0.5; heads],
+            // `kda_beta` is [4096, 64] = d x heads, so it reads as a PER-HEAD PROJECTION of x, sigmoid-ed into
+            // (0,1) the way a write strength must be. This is a MODELLING decision, stated rather than assumed:
+            // the alternative reading is per (channel, head) values used directly, which the recurrence's
+            // per-head `beta` cannot consume. If the reading is wrong every block is wrong in the same way.
+            beta: {
+                let raw = g.dequant_name(&format!("blk.{b}.kda_beta.weight"))?;
+                anyhow::ensure!(raw.len() == d * heads, "kda_beta is {} not {d} x {heads}", raw.len());
+                (0..heads)
+                    .map(|h| {
+                        let z: f64 = (0..d).map(|c| raw[c * heads + h] as f64 * xin[c]).sum();
+                        1.0 / (1.0 + (-z).exp())
+                    })
+                    .collect()
+            },
             eps: cfg.rms_norm_eps as f64,
         };
         // THE TIME STEP, from the block's own f-gate: dt = f_b(f_a(normed x)) + dt_bias, 8192 channels.
