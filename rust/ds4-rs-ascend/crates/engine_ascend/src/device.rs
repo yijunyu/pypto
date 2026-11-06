@@ -441,7 +441,17 @@ impl DeviceBinary {
                 );
             }
             let mut stubs: Vec<(&'static str, Box<u8>)> = Vec::new();
+            // REGISTER EACH DEVICE SYMBOL ONCE. Chaining DECOMPOSITION_KERNELS straight onto the slots
+            // registered a symbol TWICE whenever a decomposition kernel reused one (w8a8_band_k2048 is
+            // the same device function as the slot w8a8_experts_2048_4096), and the second registration
+            // corrupted the stub the slot launches: the expert launch then hung with a parameter block
+            // the launcher log shows is correct, while three examples regressed without changing.
+            let mut seen_symbols: Vec<&'static str> = Vec::new();
             for k in LAYER0_KERNELS.iter().chain(DECOMPOSITION_KERNELS) {
+                if seen_symbols.contains(&k.symbol) {
+                    continue;
+                }
+                seen_symbols.push(k.symbol);
                 let stub = Box::new(0u8);
                 let name = CString::new(k.symbol)?;
                 let rc = ffi::rtFunctionRegister(
@@ -752,9 +762,17 @@ impl DeviceLaunch {
             // block walks all rows: N blocks are N redundant copies contending for the same DMA, and for
             // the w8a8 expert matvec that deadlocked (eight rounds), while for the q8mv matvecs the
             // copies are idempotent and merely wasteful -- which is why the model still produced its
+            // BLOCK DIMENSION, TUNABLE FOR ONE EXPERIMENT. Iteration 151 aligned every launch with the
+            // harness's `KERNEL_DO(1, ...)`. That is right for the q8mv matvecs; the w8a8 expert launch
+            // PASSED at iteration 145 with `spec.block_dim(USABLE_AIV)` and hangs with 1, so the value is
+            // now overridable to settle which it is for this kernel.
+            let block_dim: u32 = std::env::var("DS4_BLOCK_DIM")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
             let rc = ffi::rtKernelLaunch(
                 self.stub(spec.name)?,
-                1,
+                block_dim,
                 args.as_mut_ptr() as *mut u8,
                 (args.len() * std::mem::size_of::<*mut u8>()) as u32,
                 std::ptr::null_mut(),
