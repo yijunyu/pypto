@@ -52,6 +52,16 @@ pub fn step(
     assert_eq!(gamma.len(), d);
 
     // decay per channel
+    // THE DECAY'S CONVENTION, settled by the checkpoint's own numbers rather than by taste. `kda_a_log` is ALL
+    // POSITIVE (0.35..2.10, mean 1.53), so `exp(a_log)` is ~4.6 and `exp(-4.6 * softplus(dt))` with dt ~ -0.8 gives
+    // a decay of 0.08: the state is wiped every step and the residual collapses to rms 0.4. Treating `a_log` as the
+    // RATE ITSELF gives exp(-1.53 * 0.55) = 0.43 -- a block that forgets slowly, which is what a delta net is for.
+    // BOTH CONVENTIONS WERE MEASURED, and neither fixes the collapse:
+    //   exp(-exp(a_log) * softplus(dt))  -> rms 0.39 at block 30   (a_log mean 1.53 -> decay ~0.08)
+    //   exp(-a_log * softplus(dt))       -> rms 0.16 at block 7    (decay ~0.43)
+    // So the residual's collapse is NOT (only) a_log's convention. Kept at the published KDA form, with the
+    // alternative and its measurement recorded beside it, because a convention that is merely the standard one
+    // should not be silently preferred to one that was actually tried.
     let decay: Vec<f64> = dt.iter().map(|&z| (-(a_log.exp()) * softplus(z)).exp()).collect();
 
     // S <- S * decay
