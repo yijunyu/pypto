@@ -11,9 +11,10 @@
 //! usage: w8a8_real_layer <package dir> <token id>
 
 use engine_core::attn_dispatch::{
-    CpuAttentionDispatcher,
-    decode_attn_layer_with, AttnLayerWeights, AttnStepInputs, KvCacheView, LayerParams,
+    decode_attn_prefix_with, decode_attn_suffix_with, CpuAttentionDispatcher, AttnLayerWeights,
+    AttnStepInputs, KvCacheView, LayerParams,
 };
+use engine_core::moe::{hash_router_weights_from_probs, softplus_sqrt};
 use engine_core::safetensors::Package;
 use engine_core::w8a8_roles::{PackageViews, WeightSource};  // WeightSource supplies `layer()`
 use std::path::PathBuf;
@@ -22,6 +23,25 @@ fn matvec(w: &[f32], x: &[f32], n: usize) -> Vec<f32> {
     let k = x.len();
     (0..n).map(|i| (0..k).map(|j| w[i * k + j] * x[j]).sum()).collect()
 }
+
+fn silu(x: f32) -> f32 { x / (1.0 + (-x).exp()) }
+
+/// One expert: y = W2 . (silu(W1 . h) * (W3 . h)), on the package's own int8 planes.
+fn expert_out(
+    pkg: &Package,
+    prefix: &str,
+    h: &[f32],
+    d_ffn: usize,
+) -> anyhow::Result<Vec<f32>> {
+    let w1 = pkg.dequant_tensor(&format!("{prefix}.w1.weight"))?;
+    let w3 = pkg.dequant_tensor(&format!("{prefix}.w3.weight"))?;
+    let w2 = pkg.dequant_tensor(&format!("{prefix}.w2.weight"))?;
+    let g = matvec(&w1, h, d_ffn);
+    let u = matvec(&w3, h, d_ffn);
+    let act: Vec<f32> = g.iter().zip(&u).map(|(&a, &b)| silu(a) * b).collect();
+    Ok(matvec(&w2, &act, h.len()))
+}
+
 fn rms_norm(x: &[f32], g: &[f32], eps: f32) -> Vec<f32> {
     let ss: f32 = x.iter().map(|v| v * v).sum();
     let inv = 1.0 / (ss / x.len() as f32 + eps).sqrt();
@@ -83,7 +103,7 @@ fn main() -> anyhow::Result<()> {
     for h in 0..n_hc { cur_hc[h * d..(h + 1) * d].copy_from_slice(x); }
 
     let mut kvc = vec![0.0f32; hd];          // cap 1 row at pos 0
-    let routed = vec![0.0f32; d];
+    let routed = vec![0.0f32; d];  // zeros for the step; the real one is computed after the prefix
     let step = AttnStepInputs {
         cur_hc: &cur_hc,
         kv_raw_row: &kv_raw_row,
@@ -99,11 +119,38 @@ fn main() -> anyhow::Result<()> {
         n_selected: 0,
     };
 
-    let out = decode_attn_layer_with(&CpuAttentionDispatcher, &layer, step);
-    let rms = (out.after_ffn_hc.iter().map(|v| v * v).sum::<f32>() / out.after_ffn_hc.len() as f32).sqrt();
+    // PHASE 1: the engine's prefix -- hc collapse, q/kv norm, rope, attention, grouped output
+    // projection, hc expand. It hands back the FFN's normed input.
+    let mut step = step;
+    let prefix = decode_attn_prefix_with(&CpuAttentionDispatcher, &layer, &mut step);
+    println!("prefix: normed {} after_attn_hc {}", prefix.normed.len(), prefix.after_attn_hc.len());
+
+    // PHASE 2: the MoE half, from the package's own expert weights. The engine expects `routed_out`
+    // computed from `prefix.normed`, which is exactly what this does.
+    let fg = pkg.f32_tensor("layers.0.ffn_norm.weight")?;
+    let hn = rms_norm(&prefix.normed, &fg, 1e-6);
+    let d_ffn = 2048usize;
+    let mut routed = expert_out(&pkg, "layers.0.ffn.shared_experts", &hn, d_ffn)?;
+    let gate = pkg.f32_tensor("layers.0.ffn.gate.weight")
+        .or_else(|_| pkg.dequant_tensor("layers.0.ffn.gate.weight"))?;
+    let probs = softplus_sqrt(&matvec(&gate, &hn, 256));
+    let raw = pkg.raw("layers.0.ffn.gate.tid2eid")?.1;
+    let ids: Vec<i32> = raw.chunks_exact(4).map(|c| i32::from_le_bytes([c[0],c[1],c[2],c[3]])).collect();
+    let mut picked = Vec::new();
+    for k in 0..6 { picked.push(ids[token * 6 + k] as usize); }
+    let w = hash_router_weights_from_probs(&probs, &picked, 6);
+    for (i, &e) in picked.iter().enumerate() {
+        let y = expert_out(&pkg, &format!("layers.0.ffn.experts.{e}"), &hn, d_ffn)?;
+        for (a, b) in routed.iter_mut().zip(&y) { *a += w[i] * b; }
+    }
+    println!("routed_out from the package: {} finite={}", routed.len(),
+             routed.iter().all(|v| v.is_finite()));
+
+    // PHASE 3: the engine's suffix, with the real routed output instead of zeros.
+    let out = decode_attn_suffix_with(&CpuAttentionDispatcher, &layer, &prefix, &routed, 0);
+    let rms = (out.iter().map(|v| v * v).sum::<f32>() / out.len() as f32).sqrt();
     println!("after_ffn_hc: {} = {} hc x {} d, finite={}, rms={:.4}",
-             out.after_ffn_hc.len(), n_hc, d,
-             out.after_ffn_hc.iter().all(|v| v.is_finite()), rms);
-    println!("PASS: the engine's own layer path ran on the package (hc, MLA, grouped output)");
+             out.len(), n_hc, d, out.iter().all(|v| v.is_finite()), rms);
+    println!("PASS: engine prefix + package MoE + engine suffix, on real w8a8 weights");
     Ok(())
 }
