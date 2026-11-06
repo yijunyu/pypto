@@ -262,6 +262,33 @@ def kernels(s):
     ]
     out[f"kda_delta_k3_{T}x{hd}"] = mod(f"k3_kda_delta_{hd}", 5, "".join(dl))
 
+    # --- the KDA PROJECTIONS, at their real widths ---------------------------
+    # Kimi K3 is 69 KDA blocks of 93, so these are its trunk. They are plain matvecs
+    # through the w8a8 arm, and they were missing because that arm faulted above ~1280
+    # outputs at k=4096 until iteration 151 fixed it -- not because the API could not
+    # express them.
+    #   kda_q/k/v : 8192 out from k=s["D"]             (64 heads x 128)
+    #   kda_f_a/g_a: 128 out
+    #   kda_f_b/g_b: 8192 out from k=128
+    for name, n, k in [
+        ("kda_q", 8192, s["D"]),
+        ("kda_k", 8192, s["D"]),
+        ("kda_v", 8192, s["D"]),
+        ("kda_f_a", 128, s["D"]),
+        ("kda_g_a", 128, s["D"]),
+        ("kda_f_b", 8192, 128),
+        ("kda_g_b", 8192, 128),
+    ]:
+        b = (
+            c("r", T) + c("kk", k) + c("nn", n) + c("z", 0)
+            + f"""    %x = llvm.call @__tile_load_f32(%arg0, %r, %kk) : (!llvm.ptr<1>, i32, i32) -> i32
+    %res = llvm.call @__tile_matvec_w8a8_f32(%arg1, %arg2, %arg3, %x, %z, %nn, %kk) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32) -> i32
+    llvm.call @__tile_store_f32(%arg4, %res, %r, %nn) : (!llvm.ptr<1>, i32, i32, i32) -> ()
+"""
+        )
+        out[f"{name}_k3_{T}x{n}_k{k}"] = mod(f"k3_{name}", 5, b)
+
+
     # --- the KDA short causal convolution, AT DECODE -------------------------
     #
     # The generator used to refuse this because there is no sliding-window
