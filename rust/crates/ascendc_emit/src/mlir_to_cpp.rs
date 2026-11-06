@@ -1559,10 +1559,16 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
             // than k-sized -- that is what lets k exceed the buffer.
             vec_buf_count += 9;
         }
+        // EVERY hand-written arm must be listed here. `q8mv` was added to the emitter but not to
+        // this set, so at k=8192 the alias plan engaged and folded its simultaneously-live buffers
+        // together -- the emitted total was 131072 B against the 172064 B the arm actually needs,
+        // and the kernel returned zeros. The same failure as the w8a8 arm in iteration 22, from the
+        // same omission, which is why the list is now the first thing to check for a new arm.
         if line.contains("@__tile_matvec_w8a8_f32")
             || line.contains("@__tile_matvec_w8a8_gm_f32")
             || line.contains("@__tile_matvec_gm_f32")
             || line.contains("@__tile_matvec_q8_0_gm_f32")
+            || line.contains("@__tile_matvec_q8mv_f32")
         {
             analysis.arm_allocates_buffers = true;
         }
