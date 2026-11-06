@@ -223,6 +223,13 @@ extern "C" {
     /// Returns a (ROWS × 1) tile where each row is the max of that row.
     pub fn __tile_reduce_max_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
+    /// `acc += w[row] * src[row][:]` -- one row of a weighted-V accumulation.
+    ///
+    /// The last piece the engine's flash attention needs, and it exists because the column-wise
+    /// reduction that `acc += sum_r w[r]*V[r][:]` would otherwise require is NOT in this DSL
+    /// (`__tile_reduce_sum_f32` is row-wise). Accumulating row by row needs no reduction at all.
+    pub fn __tile_row_axpy_f32(acc: u32, src: u32, w: u32, row: u32, cols: u32) -> u32;
+
     /// Scale each row of an ROWS x COLS tile by that row's entry in a 1 x ROWS tile.
     ///
     /// The runtime-scalar counterpart of `__tile_scale_f32`, whose scalar is a compile-time f32.

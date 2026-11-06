@@ -249,6 +249,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_matvec_q8mv_f32",
     "__tile_col_expand_f32",
     "__tile_row_scale_f32",
+    "__tile_row_axpy_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1553,6 +1554,10 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         //   2. the buffer count here, or the kernel references undeclared buffers (rounds 20, 54, 61);
         //   3. the `arm_allocates_buffers` set, or the alias plan folds live buffers (rounds 22, 59);
         //   4. a `tile_std` declaration, or call conformance refuses the tile.
+        if line.contains("@__tile_row_axpy_f32") {
+            // one cols-wide temp: `Muls` into it, then `Add` into the accumulator
+            vec_buf_count += 1;
+        }
         if line.contains("@__tile_row_scale_f32") {
             // one rows*cols tile
             vec_buf_count += 1;
@@ -5984,6 +5989,57 @@ fn generate_vector_compute_code(
             // this emitter uses (`Duplicate` fills from a scalar the compiler
             // knows), so it is a scalar loop -- the same shape the rope identity
             // uses, and honest about being a loop rather than a vector op.
+            // --- __tile_row_axpy_f32: acc += w[row] * src[row][:] ---
+            //
+            // `Axpy(dst, src0, src1, scalar, n)` computes `src0*scalar + src1`, so with dst=src1=acc
+            // this is exactly the accumulation, in place. Written because the column-wise reduction
+            // `acc += sum_r w[r]*V[r][:]` needs is absent: `__tile_reduce_sum_f32` is row-wise, and
+            // accumulating row by row avoids needing that reduction at all.
+            if line.contains("@__tile_row_axpy_f32") {
+                if let Some(result) = extract_result(line) {
+                    let args = extract_call_args(line);
+                    if args.len() >= 5 {
+                        let acc = resolve_buf_index(&args[0], &ssa_to_buf, &values);
+                        let src = resolve_buf_index(&args[1], &ssa_to_buf, &values);
+                        let wt = resolve_buf_index(&args[2], &ssa_to_buf, &values);
+                        let row_expr = resolve_value(&args[3], &values);
+                        let cols_expr = resolve_value(&args[4], &values);
+                        let tmp = buf_counter;
+                        buf_counter += 1;
+                        buf_sizes.insert(tmp, format!("(({}) + 7) / 8 * 8", cols_expr));
+                        writeln!(
+                            code,
+                            r#"{{ // tile_row_axpy: acc += w[row] * src[row][:]
+  AscendC::PipeBarrier<PIPE_ALL>();
+  int __ax_row = ({row}); int __ax_cols = ({cols});
+  // `Muls` + `Add` rather than `Axpy`: AscendC's Axpy has no overload in this toolkit that accepts
+  // row slices, and these two are already proven on this device by row_scale and the tiles above.
+  // Avoids the column-wise reduction entirely -- accumulate row by row instead.
+  AscendC::Muls(buf{t}[0], buf{s}[__ax_row * __ax_cols], buf{w}.GetValue(__ax_row), __ax_cols);
+  AscendC::PipeBarrier<PIPE_V>();
+  AscendC::Add(buf{a}[0], buf{a}[0], buf{t}[0], __ax_cols);
+  AscendC::PipeBarrier<PIPE_ALL>();
+}}"#,
+                            a = acc,
+                            s = src,
+                            w = wt,
+                            t = tmp,
+                            row = row_expr,
+                            cols = cols_expr
+                        )
+                        .unwrap();
+                        vec_dirty_bufs.insert(acc);
+                        vec_compute_dst_bufs.insert(acc);
+                        ssa_to_buf.insert(result.clone(), acc);
+                        values.insert(
+                            result,
+                            CppValue { expr: format!("{}", acc), cpp_type: "uint32_t".to_string() },
+                        );
+                    }
+                }
+                continue;
+            }
+
             // --- __tile_row_scale_f32: scale each row by a RUNTIME scalar ---
             //
             // `__tile_scale_f32` takes a compile-time f32; attention needs the softmax weights, which
