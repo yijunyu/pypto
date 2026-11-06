@@ -96,5 +96,47 @@ fn main() -> anyhow::Result<()> {
         }
         println!("PASS: conv, gate and rmsnorm agree with numpy, worst {worst2:.3e}");
     }
+
+    // THE ROUTER, against numpy, with a deliberate TIE in every case so both implementations must break it the
+    // same way -- the rule that decides which expert a tied score selects.
+    if let Some(path3) = std::env::args().nth(3) {
+        let t3 = std::fs::read_to_string(&path3)?;
+        let mut it = t3.lines();
+        let mut worst3 = 0.0f64;
+        let mut n = 0usize;
+        while let Some(head) = it.next() {
+            let Some(rest) = head.strip_prefix("ROUTE ") else { continue };
+            let v: Vec<usize> = rest.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            let (d, n_exp, k) = (v[0], v[1], v[2]);
+            let mut get = |want: &str| -> Vec<f64> {
+                let line = it.next().unwrap_or("");
+                let mut sp = line.split_whitespace();
+                debug_assert_eq!(sp.next().unwrap_or(""), want);
+                sp.filter_map(|x| x.parse().ok()).collect()
+            };
+            let x = get("x");
+            let router_f = get("router");
+            let bias_f = get("bias");
+            let want_w = get("w");
+            let want_i: Vec<usize> = get("idx").iter().map(|v| *v as usize).collect();
+            let router: Vec<f32> = router_f.iter().map(|v| *v as f32).collect();
+            let bias: Vec<f32> = bias_f.iter().map(|v| *v as f32).collect();
+            let scored = engine_core::moe_route::scores(&router, &bias, &x, d, n_exp);
+            let got = engine_core::moe_route::top_k_weights(&scored, k)?;
+            anyhow::ensure!(got.len() == want_i.len(), "route selected {} of {}", got.len(), want_i.len());
+            for (i, (gw, gi)) in got.iter().enumerate() {
+                anyhow::ensure!(
+                    *gi == want_i[i],
+                    "case {n}: position {i} chose expert {gi}, numpy chose {} -- the TIE rule differs",
+                    want_i[i]
+                );
+                worst3 = worst3.max((gw - want_w[i]).abs());
+            }
+            n += 1;
+        }
+        anyhow::ensure!(n > 0, "no ROUTE cases parsed");
+        anyhow::ensure!(worst3 < 1e-12, "router weights disagree by {worst3:.3e}");
+        println!("PASS: {n} router cases agree with numpy (indices identical, weights within {worst3:.3e})");
+    }
     Ok(())
 }
