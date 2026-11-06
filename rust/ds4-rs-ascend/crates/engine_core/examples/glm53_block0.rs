@@ -206,6 +206,7 @@ fn main() -> anyhow::Result<()> {
             for i in 0..d { x[i] += op[i]; }
             let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
             println!("block {b}: MLA, rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
+            if b <= 3 { println!("BLK{b}-TENSOR decode (MLA): {:?}", &x[..3]); }
             anyhow::ensure!(x.iter().all(|v| v.is_finite()), "the residual after MLA block {b} is not finite");
             // THE FFN IS NOT OPTIONAL ON AN MLA BLOCK. `continue` used to skip straight to the next block, so every
             // MLA block ran its attention and NOT its feed-forward -- which is why this driver and the prefill driver
@@ -335,7 +336,7 @@ fn main() -> anyhow::Result<()> {
         }
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
         println!("block {b}: rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
-        if b <= 2 { println!("BLK{b}-TENSOR decode: {:?}", &x[..3]); }
+        if b <= 3 { println!("BLK{b}-TENSOR decode: {:?}", &x[..3]); }
         anyhow::ensure!(x.iter().all(|v| v.is_finite()), "the residual after block {b} is not finite");
         anyhow::ensure!(rms > 0.0, "the residual after block {b} is all zero");
     }
