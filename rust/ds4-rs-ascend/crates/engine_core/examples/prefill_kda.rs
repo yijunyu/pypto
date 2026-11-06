@@ -217,7 +217,7 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
             }
             _ => {}
         }
-        if b == 0 { println!("BLK0-TENSOR prefill(after attn+FFN): {:?}", &x[0][..3]); }
+        if b <= 2 { println!("BLK{b}-TENSOR prefill(after attn+FFN): {:?}", &x[0][..3]); }
     }
     Ok(x)
 }
@@ -271,6 +271,20 @@ fn main() -> anyhow::Result<()> {
     // THE INVARIANT AT THE OUTPUT: six blocks, both runs, then the head on position 0. The ARGMAX must match --
     // a prefill that leaked the future would have moved it, and this is the check a person would actually make.
     let blocks = std::env::var("PREFILL_BLOCKS").ok().and_then(|s| s.parse().ok()).unwrap_or(6usize);
+    // PREFILL_ONE=1 runs the SINGLE-token chain, which is the only fair comparison with the decode driver.
+    if std::env::var_os("PREFILL_ONE").is_some() {
+        let one = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?])?;
+        let head = g.dequant_name("token_embd.weight")?;
+        let hw = head.len() / c.d;
+        let mut best = (f64::NEG_INFINITY, 0usize);
+        for r in 0..hw {
+            let mut acc = 0.0;
+            for cc in 0..c.d { acc += head[r * c.d + cc] as f64 * one[0][cc]; }
+            if acc > best.0 { best = (acc, r); }
+        }
+        println!("ONE-TOKEN prefill after {blocks} blocks: {} ({:.6})", best.1, best.0);
+        return Ok(());
+    }
     let h1 = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?])?;
     let h2 = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?, embed(&g, &v, ids[1], c.d)?])?;
     let head = g.dequant_name("token_embd.weight")?;

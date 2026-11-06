@@ -335,7 +335,7 @@ fn main() -> anyhow::Result<()> {
         }
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
         println!("block {b}: rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
-        if b == 0 { println!("BLK0-TENSOR decode: {:?}", &x[..3]); }
+        if b <= 2 { println!("BLK{b}-TENSOR decode: {:?}", &x[..3]); }
         anyhow::ensure!(x.iter().all(|v| v.is_finite()), "the residual after block {b} is not finite");
         anyhow::ensure!(rms > 0.0, "the residual after block {b} is all zero");
     }
