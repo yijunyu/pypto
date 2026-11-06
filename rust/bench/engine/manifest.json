@@ -5,11 +5,11 @@
  "shapes_source": "rust/ds4-rs-ascend/crates/engine_ascend/src/device.rs LAYER0_KERNELS",
  "generator": "shapes/gen_engine.py",
  "totals": {
-  "kernels": 10,
-  "tile": 10,
+  "kernels": 12,
+  "tile": 12,
   "pto": 0,
-  "ascendc": 10,
-  "device_verified": 10
+  "ascendc": 12,
+  "device_verified": 12
  },
  "kernels": {
   "rope_halves_engine_1x64": {
@@ -147,6 +147,38 @@
     "tolerance": 1e-06,
     "n": 4096,
     "args": 3
+   }
+  },
+  "proj_q8mv_engine_1x1024_k4096": {
+   "tile": "tile/proj_q8mv_engine_1x1024_k4096.tile",
+   "pto": null,
+   "ascendc": "ascendc/proj_q8mv_engine_1x1024_k4096.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2, 3 launches: wrong=0, backward relative error 1.527e-07 against an f64 reference built from the SAME bytes, tolerance 1e-6; 0.645550 ms. This is the engine's `ds4_q8mv_4096_1024` socket: FOUR pointers (w, s, x, o) with the q8_0 block scales pre-expanded into an f32 plane, and the kernel computes out[r] = sum_k w8[r,k]*x[k]*s[r,k].",
+   "device_metrics": {
+    "backward_rel": 1.527e-07,
+    "time_ms": 0.64555,
+    "repeat": 3,
+    "tolerance": 1e-06,
+    "n": 1024,
+    "k": 4096,
+    "alloc_floats": 4300000,
+    "args": 4
+   }
+  },
+  "proj_q8mv_engine_1x512_k4096": {
+   "tile": "tile/proj_q8mv_engine_1x512_k4096.tile",
+   "pto": null,
+   "ascendc": "ascendc/proj_q8mv_engine_1x512_k4096.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2, 3 launches: wrong=0, backward relative error 1.489e-07 against an f64 reference built from the SAME bytes, tolerance 1e-6; 0.352020 ms. This is the engine's `ds4_q8mv_4096_512` socket: FOUR pointers (w, s, x, o) with the q8_0 block scales pre-expanded into an f32 plane, and the kernel computes out[r] = sum_k w8[r,k]*x[k]*s[r,k].",
+   "device_metrics": {
+    "backward_rel": 1.489e-07,
+    "time_ms": 0.35202,
+    "repeat": 3,
+    "tolerance": 1e-06,
+    "n": 512,
+    "k": 4096,
+    "alloc_floats": 4300000,
+    "args": 4
    }
   }
  }
