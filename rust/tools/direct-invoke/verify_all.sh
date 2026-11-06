@@ -80,6 +80,7 @@ kimi_k3/ascendc/routed_gate_up_situ_k3_1x3072        dav-2201 k3_routed_situ_do 
 kimi_k3/ascendc/dense_gate_up_situ_k3_1x33792        dav-2201 k3_dense_situ_do            33792 3  10 1e-5f    1e-5
 glm_5_3/ascendc/proj_q_a_glm53_1x1536                dav-2201 glm53_proj_q_a_do            1536 3   2 1e-5f    1e-5
 glm_5_3/ascendc/proj_output_glm53_1x4096             dav-2201 glm53_proj_output_do         4096 3   2 1e-5f    1e-5
+glm_5_3/ascendc/kda_f_b_glm53_1x8192_k128                dav-2201 glm53_kda_f_b_do                 9000000 5 15 1e-5f 1e-6
 glm_5_3/ascendc/kda_q_glm53_1x8192_k4096                dav-2201 glm53_kda_q_do               12000000 5 15 1e-5f 1e-6
 glm_5_3/ascendc/proj_kv_a_mqa_glm53_1x512            dav-2201 glm53_proj_kv_a_mqa_do        512 3   2 1e-5f    1e-5
 glm_5_3/ascendc/proj_shexp_down_glm53_1x4096         dav-2201 glm53_proj_shexp_down_do     4096 3   2 1e-5f    1e-5
