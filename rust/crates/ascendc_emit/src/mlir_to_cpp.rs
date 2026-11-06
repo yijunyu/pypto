@@ -6012,6 +6012,7 @@ fn generate_vector_compute_code(
                     }
                     let n_expr = resolve_value(&args[2], &values);
                     writeln!(code, "AscendC::Exp(buf{}, buf{}, {});", dst, src, n_expr).unwrap();
+                    }
                     vec_dirty_bufs.insert(dst);
                     vec_compute_dst_bufs.insert(dst);
                 }
@@ -9528,6 +9529,10 @@ fn generate_vector_compute_code(
                             writeln!(code, "AscendC::PipeBarrier<PIPE_ALL>();").unwrap();
                             dma_dirty_bufs.remove(&src);
                         }
+                        // A 64-ELEMENT FLOOR, the same rule as the reduce work buffer: AscendC's
+                        // vector ops process 256 B (64 f32) per repeat, and a count below one
+                        // repeat is what returned NaN for `exp` over 8 softmax scores while `exp`
+                        // over >= 512 was always fine.
                         writeln!(code, "AscendC::Exp(buf{}, buf{}, {});", buf_idx, src, total)
                             .unwrap();
                         vec_dirty_bufs.insert(buf_idx);
