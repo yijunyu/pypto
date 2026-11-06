@@ -41,6 +41,7 @@
 //! GATE: the device layer compiles only under the `ascend` feature or a Linux
 //! target; a bare macOS build type-checks everything without needing CANN.
 
+pub mod attn_device;
 pub mod decode_runner;
 pub mod dispatcher;
 
