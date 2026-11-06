@@ -35,3 +35,9 @@ path = "src/bin/ds4_generate.rs"
 # placement work does not need a card, which is what makes this utility useful
 # for capacity planning off-box.
 ascend = []
+
+[[example]]
+name = "engine_elf_probe"
+# Needs the CANN runtime: without the feature `with_devices` does not exist, so an unconditional
+# example breaks `cargo test` for everyone who is not building for a device.
+required-features = ["ascend"]
