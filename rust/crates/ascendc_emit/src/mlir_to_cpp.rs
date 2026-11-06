@@ -6047,7 +6047,11 @@ fn generate_vector_compute_code(
                         );
                         writeln!(
                             code,
-                            "AscendC::DataCopy(buf{}, gm{}Tensor[{}], ({}) * ({}));",
+                            // PIPE_ALL after the copy: a consumer such as `mul` only gets a
+                            // PIPE_V barrier from the emitter, which does NOT order an MTE2 DMA
+                            // against the V pipe. Without this the multiply read stale UB and the
+                            // attention stage produced NaN with bounded inputs.
+                            "AscendC::DataCopy(buf{}, gm{}Tensor[{}], ({}) * ({}));\n                               AscendC::PipeBarrier<PIPE_ALL>();",
                             buf_idx, gm_idx, off_expr, rows_expr, cols_expr
                         )
                         .unwrap();
