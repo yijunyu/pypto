@@ -39,16 +39,18 @@ OUT = HERE.parent / "glm_5_3" / "tile"
 UNEXPRESSIBLE = {
     # EMPTY as of 2026-11-04. The one entry here was `kda_short_conv` -- "the tile
     # API has no sliding-window intrinsic" -- and the row now exists as
-    # `kda_conv_glm53_1x4096_k4`: a decode convolution is a fixed-radius stencil,
+    # `kda_conv_glm53_1x8192_k4`: a decode convolution is a fixed-radius stencil,
     # which a broadcast expresses, so the API was never the obstacle.
     #
-    # NOTE, and it is a real inconsistency rather than a stale comment: this file
-    # describes the kda q/k/v conv tensors as `[4, 1, 8192]` (that is
-    # 64 heads x 128, matching LINEAR_ATTN_HEAD_DIM) while the emitted row is 4096
-    # wide. Nothing in the repository pins which is right -- the GGUF metadata this
-    # corpus came from carries no tensor table -- so the row stays at the width it
-    # was built from and the discrepancy is recorded here rather than resolved by
-    # preference.
+    # RESOLVED 2026-11-06, by evidence rather than preference. The discrepancy this
+    # note recorded was 4096 (the emitted row) against 8192 (what the file describes).
+    # When the corpus was built the GGUF "carried no tensor table", so neither could
+    # be checked. It can now: `dump_meta` on GLM-5.3-Flash-Q2 prints
+    #     blk.0.kda_q_conv.weight [4, 1, 8192]
+    # so **8192 is right and the 4096 row was wrong**. The row is now emitted at its
+    # real width and device-certified bit-exact (8192/8192, max_abs 0.000e+00), and
+    # the model's kernel COUNT is unchanged: this replaces a wrong row, it does not
+    # add one.
 }
 
 
@@ -200,7 +202,14 @@ def kernels(s):
     # `kda_q_conv`/`k_conv`/`v_conv` tensor dims, [4, 1, 8192], which is where
     # the generator's UNEXPRESSIBLE note read it from.
     kda_kernel = 4
-    dl = [c("z", 0), c("r", T), c("cl", D)]
+    # THE CONV WIDTH IS NOT `D`. GLM-5.3-Flash's `blk.0.kda_q_conv.weight` is
+    # [4, 1, 8192] -- 64 heads x 128 head_dim, read from the file's own tensor table
+    # (`dump_meta`) -- while this row was emitted at D = 4096 for as long as the corpus
+    # had no tensor table to check against. The comment above has said `[4, 1, 8192]`
+    # all along; the code said D. This is the resolution of that inconsistency, and the
+    # 8192 row is device-certified bit-exact.
+    KDA_CONV_WIDTH = 8192
+    dl = [c("z", 0), c("r", T), c("cl", KDA_CONV_WIDTH)]
     for j in range(kda_kernel):
         dl.append(f"    %x{j} = llvm.call @__tile_load_f32(%arg{j}, %r, %cl) : (!llvm.ptr<1>, i32, i32) -> i32\n")
     for j in range(kda_kernel):
@@ -220,7 +229,7 @@ def kernels(s):
     dl.append(
         f"    llvm.call @__tile_store_f32(%arg{2 * kda_kernel}, %p{kda_kernel - 1}, %r, %cl) : (!llvm.ptr<1>, i32, i32, i32) -> ()\n"
     )
-    out[f"kda_conv_glm53_{T}x{D}_k{kda_kernel}"] = mod(f"glm53_kda_conv_{D}", 2 * kda_kernel + 1, "".join(dl))
+    out[f"kda_conv_glm53_{T}x{KDA_CONV_WIDTH}_k{kda_kernel}"] = mod(f"glm53_kda_conv_{KDA_CONV_WIDTH}", 2 * kda_kernel + 1, "".join(dl))
 
     # --- 7. the DENSE FFN of the first three blocks, D -> DENSE_FFN_INTER ---
     dfi = s["DENSE_FFN_INTER"]

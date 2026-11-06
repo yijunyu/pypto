@@ -192,16 +192,6 @@
    "ascendc_sha256_16": "c418470c33b59e1d",
    "pto_sha256_16": "7b976b0486eeba66"
   },
-  "kda_conv_glm53_1x4096_k4": {
-   "tile": "tile/kda_conv_glm53_1x4096_k4.tile",
-   "pto": "pto/kda_conv_glm53_1x4096_k4.pto",
-   "ascendc": "ascendc/kda_conv_glm53_1x4096_k4.cpp",
-   "pto_sha256_16": "f95fe7737020a548",
-   "pto_needs_buffer_reuse": true,
-   "ascendc_sha256_16": "fd4c967d50877901",
-   "ascendc_aliased": true,
-   "device_check": "PASS 2026-11-05 on 910B2: 4096/4096 exact against an f64 oracle for out = sum_j x_j*w_j over four taps. This is the first nine-argument kernel run, and the first kernel whose correctness depends on the aliasing pass having kept twelve buffers apart."
-  },
   "proj_kv_b_glm53_1x28672": {
    "tile": "tile/proj_kv_b_glm53_1x28672.tile",
    "pto": null,
@@ -235,6 +225,18 @@
    "ascendc": "ascendc/routed_down_glm53_1x2048.cpp",
    "ascendc_sha256_16": "945062ccac43dc5b",
    "device_check": "PASS 2026-11-05 on 910B2: element 0 matches an f64 dot product to 5.158e-08. One expert's down projection at MOE_INTER width, which is half the shared expert's D."
+  },
+  "kda_conv_glm53_1x8192_k4": {
+   "tile": "tile/kda_conv_glm53_1x8192_k4.tile",
+   "pto": null,
+   "ascendc": "ascendc/kda_conv_glm53_1x8192_k4.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2: 8192/8192 exact, max_abs 0.000e+00 (BIT-EXACT) against an f64 oracle for out = sum_j x_j*w_j. This row REPLACES the 4096 one, which was emitted at D while the file's own tensor table says blk.0.kda_q_conv.weight [4,1,8192]; the model's kernel count is unchanged.",
+   "device_metrics": {
+    "width": 8192,
+    "taps": 4,
+    "max_abs": 0.0,
+    "tolerance": 1e-05
+   }
   }
  },
  "tile_rs_removed_2026_11_02": {
