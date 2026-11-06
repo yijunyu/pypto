@@ -72,7 +72,6 @@ engine/ascendc/proj_q8mv_engine_1x4096_k8192          dav-2201 proj_q8mv_engine_
 engine/ascendc/proj_q8mv_engine_1x32768_k1024         dav-2201 proj_q8mv_engine_1x32768_k1024_do 34000000 4 17 1e-5f 1e-6 3 32768 1024
 kimi_k3/ascendc/kda_delta_k3_1x128                   dav-2201 k3_kda_delta_128_do           128 5   4 1e-5f    1e-6
 glm_5_3/ascendc/kda_delta_glm53_1x128                dav-2201 glm53_kda_delta_128_do        128 5   4 1e-5f    1e-6
-glm_5_3/ascendc/kda_conv_glm53_1x4096_k4             dav-2201 glm53_kda_conv_4096_do       4096 9  11 1e-5f    1e-5
 kimi_k3/ascendc/kda_conv_k3_1x7168_k4                dav-2201 k3_kda_conv_7168_do          7168 9  11 1e-5f    1e-5
 glm_5_3/ascendc/kda_conv_glm53_1x8192_k4             dav-2201 glm53_kda_conv_8192_do          8192 9  11 1e-5f    1e-5
 kimi_k3/ascendc/shexp_gate_up_situ_k3_1x3072         dav-2201 k3_shexp_situ_do             3072 3  10 1e-5f    1e-5

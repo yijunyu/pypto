@@ -60,7 +60,7 @@
   "ascendc_refused": 8,
   "tile_rs_refused": 6,
   "reshaped": 0,
-  "device_verified": 9
+  "device_verified": 11
  },
  "kernels": {
   "argmax_glm53_1x154880": {
@@ -131,7 +131,7 @@
    "tile_rs_refused": "refused bench/glm_5_3/pto/proj_output_glm53_1x4096.pto: tile `%pto8` has a partial or dynamic v_row; the lift requires the full logical tile",
    "ascendc_sha256_16": "2c39fcfd205bd7ca",
    "pto_sha256_16": "8e9814b3ae3109b8",
-   "device_check": "PASS 2026-11-05 on 910B2: the output tile is now 1x1 and the kernel stores exactly one element; element 0 matches an f64 dot product to rel 6.416e-08. It was declared 4096 wide and computed one row, which is why it was SHAPE_LIMIT until the corpus decision to declare a decode projection as the dot product it is."
+   "device_check": "PASS 2026-11-06 on 910B2: element-by-element PASS (oracle 2, 4096 outputs)"
   },
   "proj_q_a_glm53_1x1536": {
    "tile": "tile/proj_q_a_glm53_1x1536.tile",
@@ -141,7 +141,7 @@
    "tile_rs_refused": "refused bench/glm_5_3/pto/proj_q_a_glm53_1x1536.pto: tile `%pto8` has a partial or dynamic v_row; the lift requires the full logical tile",
    "ascendc_sha256_16": "0dcd6d7e1cd8aa12",
    "pto_sha256_16": "80d64281b4aa861d",
-   "device_check": "PASS 2026-11-05 on 910B2: the output tile is now 1x1 and the kernel stores exactly one element; element 0 matches an f64 dot product to rel 1.533e-07. It was declared 1536 wide and computed one row, which is why it was SHAPE_LIMIT until the corpus decision to declare a decode projection as the dot product it is."
+   "device_check": "PASS 2026-11-06 on 910B2: element-by-element PASS (oracle 2, 1536 outputs)"
   },
   "proj_q_b_glm53_1x16384": {
    "tile": "tile/proj_q_b_glm53_1x16384.tile",
@@ -166,7 +166,8 @@
    "ascendc": "ascendc/residual_add_glm53_1x4096.cpp",
    "tile_rs": "tile-rs/residual_add_glm53_1x4096.rs",
    "ascendc_sha256_16": "39b2ee4b539adaa7",
-   "pto_sha256_16": "30506946cc524c47"
+   "pto_sha256_16": "30506946cc524c47",
+   "device_check": "PASS 2026-11-06 on 910B2: elements=4096 wrong=0 max_abs 0.000e+00 (BIT-EXACT) (oracle 0)"
   },
   "rmsnorm_glm53_1x4096": {
    "tile": "tile/rmsnorm_glm53_1x4096.tile",
@@ -174,7 +175,8 @@
    "ascendc": "ascendc/rmsnorm_glm53_1x4096.cpp",
    "tile_rs": "tile-rs/rmsnorm_glm53_1x4096.rs",
    "ascendc_sha256_16": "a4ccacbcee57209a",
-   "pto_sha256_16": "2831d9afccfe46ba"
+   "pto_sha256_16": "2831d9afccfe46ba",
+   "device_check": "PASS 2026-11-06 on 910B2: elements=4096 wrong=0 max_abs 2.849e-07 max_rel 1.902e-07 (oracle 1, command from verify_all.sh verbatim)"
   },
   "router_topk_glm53_1x288_k8": {
    "tile": "tile/router_topk_glm53_1x288_k8.tile",
