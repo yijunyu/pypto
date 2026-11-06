@@ -409,3 +409,93 @@ mod assembly_tests {
         assert_eq!(a, b);
     }
 }
+
+#[cfg(test)]
+mod regression {
+    //! One test per bug this module has actually had.
+    use super::*;
+
+    fn params_with(taps: Vec<[f64; 4]>, heads: usize, d: usize) -> BlockParams {
+        BlockParams {
+            heads,
+            head_dim: d,
+            a_log: vec![0.0; heads],
+            conv_q: taps.clone(),
+            conv_k: taps.clone(),
+            conv_v: taps,
+            dt_bias: vec![0.0; heads * d],
+            beta: vec![0.5; heads],
+            eps: 0.0,
+        }
+    }
+
+    /// BUG (iteration 191): the conv was ONE set of taps shared by every channel. `kda_*_conv` is [4, 1, 8192] -- four
+    /// taps for EACH channel -- so varying the taps per channel must change the output. A shared-taps implementation
+    /// ignores all but the first and this test fails.
+    #[test]
+    fn the_conv_uses_each_channel_s_own_taps() {
+        let (heads, d) = (1, 4);
+        let n = heads * d;
+        // THREE TOKENS, because with one position the conv's higher taps and the carried state cannot contribute:
+        // `taps[j]` applies only when `ch >= j * heads * d`, and the state starts at zero. My first fixture used one
+        // token and both tests failed for that reason alone.
+        let toks = 3usize;
+        // NON-ZERO k and v: with zeros the attention contributes nothing, both runs return the normalised x, and the
+        // test passes or fails for a reason unrelated to the conv. (My first fixture used zeros and got NaN then 1.0.)
+        let x: Vec<f64> = (0..n * toks).map(|i| 0.3 + (i % 5) as f64 * 0.1).collect();
+        let k: Vec<f64> = (0..n * toks).map(|i| 0.7 - (i % 3) as f64 * 0.4).collect();
+        let v: Vec<f64> = (0..n * toks).map(|i| 0.5 + (i % 4) as f64 * -0.2).collect();
+        let onw = vec![1.0f64; d];
+        let gate = vec![0.2f64; n * toks];
+        let ogate = vec![1.0f64; n * toks];
+
+        // uniform taps: every channel the same
+        let uniform = vec![[1.0, 0.2, 0.0, 0.0]; n];
+        let a = block(&params_with(uniform, heads, d), &x, &k, &v, &gate, toks, &onw, &ogate);
+
+        // per-channel taps: channel 0 keeps [1,0.2,...], the rest get a much larger second tap
+        let mut varying = vec![[1.0, 0.2, 0.0, 0.0]; n];
+        for (c, tap) in varying.iter_mut().enumerate().skip(1) {
+            tap[1] = 0.9 + c as f64 * 0.1;
+        }
+        let b = block(&params_with(varying, heads, d), &x, &k, &v, &gate, toks, &onw, &ogate);
+
+        // with the SAME x and only the taps differing, the outputs must differ: the conv must be reading per channel
+        let differ = a.iter().zip(&b).any(|(p, q)| (p - q).abs() > 1e-12);
+        assert!(
+            differ,
+            "changing the per-channel taps did not change the output -- the conv is using ONE set of taps for all \
+             channels, which is the bug iteration 191 fixed (a={a:?} b={b:?})"
+        );
+    }
+
+    /// BUG (iteration 190-194): every KDA constant was stubbed. `a_log` reaching `step` must change the decay, so a
+    /// block with `a_log = 0` and one with `a_log = 5` must differ on the same input.
+    #[test]
+    fn a_log_reaches_the_decay() {
+        let (heads, d) = (1, 4);
+        let n = heads * d;
+        // TWO TOKENS at least: the state starts at zero, so a_log can only matter once something is in it.
+        let toks = 2usize;
+        let x: Vec<f64> = (0..n * toks).map(|i| 0.5 + (i % 4) as f64 * 0.1).collect();
+        let k: Vec<f64> = (0..n * toks).map(|i| 0.7 - (i % 3) as f64 * 0.4).collect();
+        let v: Vec<f64> = (0..n * toks).map(|i| 0.5 + (i % 3) as f64 * -0.2).collect();
+        let onw = vec![1.0f64; d];
+        // a NON-ZERO gate so `dt` is non-zero and the decay actually depends on a_log
+        let gate = vec![0.5f64; n * toks];
+        let ogate = vec![1.0f64; n * toks];
+        let taps = vec![[1.0, 0.0, 0.0, 0.0]; n];
+
+        let mut p0 = params_with(taps.clone(), heads, d);
+        p0.a_log = vec![0.0];
+        let mut p5 = params_with(taps, heads, d);
+        p5.a_log = vec![5.0];
+
+        let a = block(&p0, &x, &k, &v, &gate, toks, &onw, &ogate);
+        let b = block(&p5, &x, &k, &v, &gate, toks, &onw, &ogate);
+        assert!(
+            a.iter().zip(&b).any(|(p, q)| (p - q).abs() > 1e-12),
+            "a_log had no effect on the block -- the constant is being ignored (a={a:?} b={b:?})"
+        );
+    }
+}
