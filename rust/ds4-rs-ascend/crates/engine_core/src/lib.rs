@@ -26,6 +26,7 @@ pub mod snapshot_store;
 
 #[path = "forward.rs"]
 pub mod forward;
+pub mod kda_block;
 
 #[path = "moe.rs"]
 pub mod moe;
