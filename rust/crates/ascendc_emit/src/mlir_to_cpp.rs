@@ -247,6 +247,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_matvec_w8a8_f32",
     "__tile_matvec_w8a8_gm_f32",
     "__tile_matvec_q8mv_f32",
+    "__tile_col_expand_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1545,6 +1546,15 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         if line.contains("@__tile_div_f32") {
             vec_buf_count += 1;
             has_binary_ops = true;
+        }
+        // A NEW ARM NEEDS FOUR THINGS, and forgetting any one of them fails in a different way:
+        //   1. an entry in the known-intrinsics list, or the call is refused;
+        //   2. the buffer count here, or the kernel references undeclared buffers (rounds 20, 54, 61);
+        //   3. the `arm_allocates_buffers` set, or the alias plan folds live buffers (rounds 22, 59);
+        //   4. a `tile_std` declaration, or call conformance refuses the tile.
+        if line.contains("@__tile_col_expand_f32") {
+            // one rows*cols tile
+            vec_buf_count += 1;
         }
         if line.contains("@__tile_matvec_q8mv_f32") {
             // EIGHT buffers: w8 row (k), x row (k), scale row (k), product (k), reduce work (k),
@@ -5969,6 +5979,51 @@ fn generate_vector_compute_code(
             // this emitter uses (`Duplicate` fills from a scalar the compiler
             // knows), so it is a scalar loop -- the same shape the rope identity
             // uses, and honest about being a loop rather than a vector op.
+            // --- __tile_col_expand_f32: broadcast a 1 x COLS tile across ROWS rows ---
+            //
+            // The column-wise counterpart of `__tile_row_expand_f32`, and a scalar loop for the
+            // same reason: this emitter's vocabulary has no tile-to-block broadcast. The engine's
+            // flash attention opens with exactly this (fixture `tcolexpand`), broadcasting Q[1xD]
+            // across the 8 rows of a K/V block.
+            if line.contains("@__tile_col_expand_f32") {
+                if let Some(result) = extract_result(line) {
+                    let args = extract_call_args(line);
+                    if args.len() >= 4 {
+                        let src = resolve_buf_index(&args[1], &ssa_to_buf, &values);
+                        let rows_expr = resolve_value(&args[2], &values);
+                        let cols_expr = resolve_value(&args[3], &values);
+                        let buf_idx = buf_counter;
+                        buf_counter += 1;
+                        buf_sizes.insert(
+                            buf_idx,
+                            format!("((({}) * ({})) + 7) / 8 * 8", rows_expr, cols_expr),
+                        );
+                        writeln!(
+                            code,
+                            r#"{{ // tile_col_expand: one ROW copied down CE_ROWS rows
+  int __ce_rows = ({rows}); int __ce_cols = ({cols});
+  for (int __r = 0; __r < __ce_rows; ++__r)
+    for (int __c = 0; __c < __ce_cols; ++__c)
+      buf{d}.SetValue(__r * __ce_cols + __c, buf{s}.GetValue(__c));
+}}"#,
+                            rows = rows_expr,
+                            cols = cols_expr,
+                            d = buf_idx,
+                            s = src
+                        )
+                        .unwrap();
+                        vec_dirty_bufs.insert(buf_idx);
+                        vec_compute_dst_bufs.insert(buf_idx);
+                        ssa_to_buf.insert(result.clone(), buf_idx);
+                        values.insert(
+                            result,
+                            CppValue { expr: format!("{}", buf_idx), cpp_type: "uint32_t".to_string() },
+                        );
+                    }
+                }
+                continue;
+            }
+
             if line.contains("@__tile_row_expand_f32") {
                 if let Some(result) = extract_result(line) {
                     let args = extract_call_args(line);

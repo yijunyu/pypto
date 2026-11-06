@@ -223,6 +223,15 @@ extern "C" {
     /// Returns a (ROWS × 1) tile where each row is the max of that row.
     pub fn __tile_reduce_max_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
+    /// Broadcast a 1 x COLS tile across ROWS rows -- the COLUMN-wise counterpart of
+    /// `__tile_row_expand_f32`.
+    ///
+    /// Needed by the engine's flash-blocked attention, whose first step is broadcasting Q[1xD]
+    /// across the 8 rows of a K/V block (fixture `tcolexpand`, layer0.pto:437+). Like row_expand
+    /// this is a scalar loop in the emitter rather than a vector op, because the vocabulary this
+    /// emitter uses has no tile-to-block broadcast.
+    pub fn __tile_col_expand_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
+
     /// Row-wise sum reduction of an f32 tile.
     pub fn __tile_reduce_sum_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
