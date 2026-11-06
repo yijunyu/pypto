@@ -28,17 +28,26 @@ fn mla_block_1token(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) ->
     };
     let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
     let xin = engine_core::kda_block::gated_rms_norm(x, &norm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], eps);
-    // q_a: d -> 1536, then q_b: 1536 -> 16384 (64 heads x 256)
-    let wqa = g.dequant_name(&format!("blk.{b}.attn_q_a.weight"))?;
-    let qa = mv(&wqa, &xin, d, 1536);
-    let wqb = g.dequant_name(&format!("blk.{b}.attn_q_b.weight"))?;
-    let _q = mv(&wqb, &qa, 1536, 16384);
-    // kv_a: d -> 512, then v_b: per head 512 -> 256, i.e. 64 x (256 x 512)
-    let wkva = g.dequant_name(&format!("blk.{b}.attn_kv_a_mqa.weight"))?;
-    let kva = mv(&wkva, &xin, d, 512);
-    let wvb = g.dequant_name(&format!("blk.{b}.attn_v_b.weight"))?;
-    let heads = 64usize;
-    let mut vcat = vec![0.0f64; heads * 256];
+    // EVERY WIDTH IS DERIVED FROM ITS TENSOR. This helper had five GLM-shaped constants (1536, 16384, 512, 256, heads=64)
+    // and Kimi's MLA has 96 heads of a different width, so the 8-block run indexed past its buffer at block 3. The KDA path
+    // was fixed one constant at a time; the MLA path is the same lesson in the other attention kind.
+    let wqa = dequant_either(&g, b, "q_a")?;
+    let q_lora = wqa.len() / d;
+    let qa = mv(&wqa, &xin, d, q_lora);
+    let wqb = dequant_either(&g, b, "q_b")?;
+    let q_out = wqb.len() / q_lora;
+    let _q = mv(&wqb, &qa, q_lora, q_out);
+    // kv_a: d -> lat; v_b: [lat, per_head, heads] flattened, so v_out = len / lat and heads = v_out / per_head.
+    let wkva = dequant_either(&g, b, "kv_a_mqa")?;
+    let lat = wkva.len() / d;
+    let kva = mv(&wkva, &xin, d, lat);
+    let wvb = dequant_either(&g, b, "v_b")?;
+    let v_out = wvb.len() / lat;
+    const PER_HEAD: usize = 256; // the latent per head; the same in both models (GLM 64x256, Kimi 96x256)
+    anyhow::ensure!(v_out % PER_HEAD == 0, "v_b gives {v_out} outputs, not a multiple of {PER_HEAD}");
+    let heads = v_out / PER_HEAD;
+    anyhow::ensure!(heads * PER_HEAD == q_out, "q_b gives {q_out} outputs, not {heads} x {PER_HEAD}");
+    let mut vcat = vec![0.0f64; heads * PER_HEAD];
     for h in 0..heads {
         for r in 0..256 {
             let mut acc = 0.0;
@@ -50,7 +59,7 @@ fn mla_block_1token(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) ->
     }
     // output: 16384 -> d
     let wo = g.dequant_name(&format!("blk.{b}.attn_output.weight"))?;
-    Ok(mv(&wo, &vcat, 16384, d))
+    Ok(mv(&wo, &vcat, v_out, d))
 }
 
 /// How many blocks to run: all of them unless GLM53_BLOCKS says otherwise.
