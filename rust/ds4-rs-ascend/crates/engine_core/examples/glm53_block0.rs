@@ -18,6 +18,41 @@ use engine_core::glm5_stream::ShardedGguf;
 use engine_core::kda_block::{block, BlockParams};
 use std::path::PathBuf;
 
+
+/// ONE TOKEN through an MLA block. With a single position the attention over that position is the identity on
+/// `v`, so the block reduces to its four certified projections plus the norms -- which is why a decode-shaped
+/// MLA block is tractable while a prefill one is not.
+fn mla_block_1token(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) -> anyhow::Result<Vec<f64>> {
+    let mv = |w: &[f32], xv: &[f64], k: usize, n: usize| -> Vec<f64> {
+        (0..n).map(|r| (0..k).map(|c| w[r * k + c] as f64 * xv[c]).sum()).collect()
+    };
+    let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
+    let xin = engine_core::kda_block::gated_rms_norm(x, &norm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], eps);
+    // q_a: d -> 1536, then q_b: 1536 -> 16384 (64 heads x 256)
+    let wqa = g.dequant_name(&format!("blk.{b}.attn_q_a.weight"))?;
+    let qa = mv(&wqa, &xin, d, 1536);
+    let wqb = g.dequant_name(&format!("blk.{b}.attn_q_b.weight"))?;
+    let _q = mv(&wqb, &qa, 1536, 16384);
+    // kv_a: d -> 512, then v_b: per head 512 -> 256, i.e. 64 x (256 x 512)
+    let wkva = g.dequant_name(&format!("blk.{b}.attn_kv_a_mqa.weight"))?;
+    let kva = mv(&wkva, &xin, d, 512);
+    let wvb = g.dequant_name(&format!("blk.{b}.attn_v_b.weight"))?;
+    let heads = 64usize;
+    let mut vcat = vec![0.0f64; heads * 256];
+    for h in 0..heads {
+        for r in 0..256 {
+            let mut acc = 0.0;
+            for c in 0..512 {
+                acc += wvb[(h * 256 + r) * 512 + c] as f64 * kva[c];
+            }
+            vcat[h * 256 + r] = acc;
+        }
+    }
+    // output: 16384 -> d
+    let wo = g.dequant_name(&format!("blk.{b}.attn_output.weight"))?;
+    Ok(mv(&wo, &vcat, 16384, d))
+}
+
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("usage: glm53_block0 <gguf>"))?;
@@ -54,9 +89,18 @@ fn main() -> anyhow::Result<()> {
     // blocks are KDA/Dense (read from the file), so the chain runs until the first MLA block and no further --
     // a partial chain that says where it stopped is worth more than one that guesses.
     let first_mla = plan.iter().position(|b| b.attn == Attn::Mla).unwrap_or(plan.len());
-    println!("running blocks 0..{first_mla} (the leading KDA run); block {first_mla} is MLA and is not attempted");
+    println!("running blocks 0..{} of {}", plan.len().min(4), plan.len());
     let t0 = std::time::Instant::now();
-    for b in 0..first_mla.min(3) {
+    let upto = plan.len().min(4);
+    for b in 0..upto {
+        if plan[b].attn == Attn::Mla {
+            let op = mla_block_1token(&g, b, &x, d, cfg.rms_norm_eps as f64)?;
+            for i in 0..d { x[i] += op[i]; }
+            let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
+            println!("block {b}: MLA, rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
+            anyhow::ensure!(x.iter().all(|v| v.is_finite()), "the residual after MLA block {b} is not finite");
+            continue;
+        }
         let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
         let xin = engine_core::kda_block::gated_rms_norm(&x, &norm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], cfg.rms_norm_eps as f64);
         let wq = g.dequant_name(&format!("blk.{b}.kda_q.weight"))?;

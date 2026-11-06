@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
         println!("{}", t.name);
     }
     println!("--- every tensor of block 0 ---");
-    for t in g.tensors.iter().filter(|t| t.name.starts_with("blk.0.")) {
+    for t in g.tensors.iter().filter(|t| t.name.starts_with("blk.3.")) {
         println!("{} {:?} {:?}", t.name, t.dims, t.ttype);
     }
     println!("--- first 24 tensor names ---");
