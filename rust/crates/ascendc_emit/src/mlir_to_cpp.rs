@@ -6286,8 +6286,10 @@ fn generate_vector_compute_code(
     // `PipeBarrier<PIPE_ALL>` does not order that pair; the flag/wait does.
     // EVENT_ID1, not ID0: the reduce arms use ID0 for their own V_S pairs, and a second pair on the
     // same id can consume the wrong event -- which reads a stale (in this case inf) scalar.
-    AscendC::SetFlag<AscendC::HardEvent::V_S>(EVENT_ID1);
-    AscendC::WaitFlag<AscendC::HardEvent::V_S>(EVENT_ID1);
+    // SCALAR-form `Duplicate`. The TENSOR form was tried and has no matching overload in this
+    // toolkit ("no matching function for call to 'Duplicate'"), and the scalar READ returns 0 for a
+    // tile a vector op just produced. So a scalar broadcast has no working path here yet; this form
+    // is kept because it COMPILES, and the failure it produces is a zero rather than a crash.
     float __ce_val = buf{s}.GetValue(0);
     AscendC::Duplicate(buf{d}, __ce_val, __ce_rows);
   }} else {{
