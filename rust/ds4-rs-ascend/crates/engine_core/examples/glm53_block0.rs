@@ -75,6 +75,24 @@ fn load_conv(g: &ShardedGguf, b: usize, which: &str, channels: usize) -> anyhow:
         .collect())
 }
 
+
+/// DEQUANTISE A TENSOR UNDER EITHER SPELLING.
+///
+/// GLM 5.3 names the linear projections `kda_q`/`kda_k`/`kda_v`/`kda_output`; Kimi K3 names the same tensors
+/// `attn_q`/`attn_k`/`attn_v`/`attn_output`. The forward was GLM-spelled throughout and failed on Kimi with
+/// "tensor not found: blk.0.kda_q.weight" -- the same class of mismatch the SCHEDULE hit one round earlier.
+fn dequant_either(g: &ShardedGguf, b: usize, base: &str) -> anyhow::Result<Vec<f32>> {
+    let mut last = None;
+    for prefix in ["kda_", "attn_"] {
+        let name = format!("blk.{b}.{prefix}{base}.weight");
+        match g.dequant_name(&name) {
+            Ok(v) => return Ok(v),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no spelling of {base} in block {b}")))
+}
+
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("usage: glm53_block0 <gguf>"))?;
@@ -104,13 +122,19 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or(1e-5)
         };
         // hidden_size is taken from the embedding's own dims rather than from a key Kimi does not carry.
-        let embd_dims = g
-            .tensors
-            .iter()
-            .find(|t| t.name == "token_embd.weight")
-            .map(|t| t.dims.clone())
-            .unwrap_or_default();
-        let hidden = embd_dims.first().copied().unwrap_or(0) as usize;
+        // THE EMBEDDING IS IN A SHARD, NOT IN SHARD 1. Kimi's shard 1 carries metadata and zero tensors, so reading
+        // `token_embd`'s dims from it gave hidden = 0. Scan the other paths too.
+        let mut hidden = 0usize;
+        let mut extra_paths: Vec<std::path::PathBuf> = std::env::args().skip(2).map(std::path::PathBuf::from).collect();
+        extra_paths.insert(0, path.clone());
+        for pp in &extra_paths {
+            if let Ok(gf) = GgufFile::open(pp) {
+                if let Some(t) = gf.tensors.iter().find(|t| t.name == "token_embd.weight") {
+                    hidden = t.dims.first().copied().unwrap_or(0) as usize;
+                    break;
+                }
+            }
+        }
         println!(
             "kimi config: {} blocks, {} heads, kda head_dim {}, vocab {}, hidden {}, eps {:.1e}",
             u("block_count"),
@@ -174,11 +198,11 @@ fn main() -> anyhow::Result<()> {
     };
     let d = cfg.hidden_size;
     // The tensors the file itself names for block 0 (read, not assumed).
-    let wq = g.dequant_name("blk.0.kda_q.weight")?;
+    let wq = dequant_either(&g, 0, "q")?;
     println!("kda_q dequantised: {} values", wq.len());
     let heads = 64usize;
     let head_dim = 128usize;
-    anyhow::ensure!(wq.len() == 8192 * d, "kda_q is {} not 8192 x {d}", wq.len());
+    anyhow::ensure!(wq.len() == heads * 128 * d, "kda_q is {} not {heads} x 128 x {d}", wq.len());
     anyhow::ensure!(heads * head_dim == 8192, "64 heads x 128 must be 8192");
 
     // A deterministic input; the VALUES do not matter, the SHAPES and the finiteness do.
@@ -223,8 +247,8 @@ fn main() -> anyhow::Result<()> {
             .collect()
     };
     let q = proj(&wq);
-    let k = proj(&g.dequant_name("blk.0.kda_k.weight")?);
-    let v = proj(&g.dequant_name("blk.0.kda_v.weight")?);
+    let k = proj(&dequant_either(&g, 0, "k")?);
+    let v = proj(&dequant_either(&g, 0, "v")?);
     println!("projections: q {} k {} v {}", q.len(), k.len(), v.len());
 
     let onw = vec![1.0f64; head_dim];
@@ -297,9 +321,9 @@ fn main() -> anyhow::Result<()> {
         }
         let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
         let xin = engine_core::kda_block::gated_rms_norm(&x, &norm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], cfg.rms_norm_eps as f64);
-        let wq = g.dequant_name(&format!("blk.{b}.kda_q.weight"))?;
-        let wk = g.dequant_name(&format!("blk.{b}.kda_k.weight"))?;
-        let wv = g.dequant_name(&format!("blk.{b}.kda_v.weight"))?;
+        let wq = dequant_either(&g, b, "q")?;
+        let wk = dequant_either(&g, b, "k")?;
+        let wv = dequant_either(&g, b, "v")?;
         let proj = |w: &[f32], xv: &[f64]| -> Vec<f64> {
             (0..8192).map(|r| (0..d).map(|c| w[r * d + c] as f64 * xv[c]).sum()).collect()
         };
@@ -369,7 +393,7 @@ fn main() -> anyhow::Result<()> {
         let o = block(&params, &q, &k, &v, &gate, 1, &onw, &ogate);
         anyhow::ensure!(o.iter().all(|v| v.is_finite()), "block {b} produced a non-finite value");
         // output projection (8192 -> d) then the residual
-        let wo = g.dequant_name(&format!("blk.{b}.kda_output.weight"))?;
+        let wo = dequant_either(&g, b, "output")?;
         // attn_output is [12288, 7168] for Kimi and [8192, 4096]-shaped for GLM; take the leading d columns
         let op = (0..d).map(|r| (0..8192.min(o.len())).map(|c| (wo.get(r * 8192 + c).copied().unwrap_or(0.0) as f64) * o[c]).sum::<f64>()).collect::<Vec<_>>();
         for i in 0..d { x[i] += op[i]; }
