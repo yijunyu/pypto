@@ -29,4 +29,5 @@ python3 "$here/merge_kernels.py" "$out" \
     "$bench/proj_q8mv_engine_1x32768_k1024.cpp" \
     "$bench/proj_q8mv_engine_1x512_k4096.cpp" \
     "$bench/proj_q8mv_engine_1x4096_k8192.cpp" \
+    "$bench/attn_sink_1head_1blk.cpp" \
     "$here/engine_shim.cpp"

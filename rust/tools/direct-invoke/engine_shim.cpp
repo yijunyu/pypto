@@ -73,3 +73,23 @@ __global__ __aicore__ void ds4_q8mv_8192_4096(__gm__ signed char *w, __gm__ floa
     op.Init((GM_ADDR)w, (GM_ADDR)s, (GM_ADDR)x, (GM_ADDR)o);
     op.Process();
 }
+
+// THE ATTENTION SOCKET. `ds4_attn_sink_batched(q, kv, sk, o)` -- 64 heads, S=128, D=512, one launch.
+//
+// The generated kernel computes ONE HEAD (and one 8-position block), certified on device at
+// backward_rel 7.932e-08 against an f64 oracle. The 64-head extent is reached with a C++ loop HERE
+// rather than in the tile, because the AscendC emitter has no `scf.for`: a straight-line 64-head
+// unroll is ~1088 ops and ~500 buffers, and each head needs ~40 KB of UB, so only four heads would
+// fit. A loop reuses one head's buffers, which is what makes 64 fit.
+//
+// The per-head kernel takes (q_head, kv, sk_head, o_head), so the heads are addressed by POINTER
+// OFFSET: q + h*512, sk + h*8, o + h*512.
+__global__ __aicore__ void ds4_attn_sink_batched(__gm__ float *q, __gm__ float *kv,
+                                                __gm__ float *sk, __gm__ float *o) {
+    for (int __h = 0; __h < 64; ++__h) {
+        Kernel_attn_sink_1blk op;
+        op.Init((GM_ADDR)(q + __h * 512), (GM_ADDR)kv, (GM_ADDR)(sk + __h * 8),
+                (GM_ADDR)(o + __h * 512));
+        op.Process();
+    }
+}
