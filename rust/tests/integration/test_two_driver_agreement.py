@@ -88,3 +88,32 @@ def test_hyper_connections_change_the_token_but_do_not_break_it():
     assert t1 != t0, (
         f"hyper-connections produced the SAME token ({t0}) -- either the path is not wired in or it is being ignored"
     )
+
+
+KIMI_SHARDS = sorted(
+    str(p) for p in Path("/Volumes/T7 Shield/LLMs/kimi-k3-ud-iq1s").glob("*.gguf")
+) if Path("/Volumes/T7 Shield/LLMs/kimi-k3-ud-iq1s").is_dir() else []
+
+
+@slow
+def test_kimi_produces_a_token_from_its_own_weights():
+    """Kimi K3's forward, after six rounds of spelling and sharding fixes.
+
+    This test exists because the Kimi path had SIX separate obstacles in a row -- a config reader assuming GLM's keys, a
+    metadata-only shard, a third tensor spelling, a DIRECT gate where GLM's is low-rank, a hardcoded width, and a resolver
+    that could return a real tensor from the wrong question. Each is guarded here by the one assertion that fails if the
+    path breaks: a token, from a vocabulary of 163,840, through 2 of its 62 available blocks.
+    """
+    if len(KIMI_SHARDS) < 2:
+        pytest.skip("Kimi K3's shards are not mounted")
+    out = subprocess.run(
+        [str(DECODE), *KIMI_SHARDS],
+        capture_output=True, text=True, timeout=3600,
+        env=dict(os.environ, DS4_KIMI="1", GLM53_BLOCKS="2"),
+    )
+    assert out.returncode == 0, f"Kimi failed:\n{out.stdout[-2000:]}\n{out.stderr[-2000:]}"
+    assert "TOKEN from Kimi K3" in out.stdout, (
+        "the label must name the LOADED model -- a Kimi run once printed 'TOKEN from GLM 5.3':\n" + out.stdout[-1500:]
+    )
+    tok, _ = _token(out.stdout)
+    assert 0 <= tok < 163840, f"token {tok} is outside Kimi's vocabulary"
