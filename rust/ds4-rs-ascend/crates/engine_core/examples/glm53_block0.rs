@@ -206,6 +206,34 @@ fn main() -> anyhow::Result<()> {
             let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
             println!("block {b}: MLA, rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
             anyhow::ensure!(x.iter().all(|v| v.is_finite()), "the residual after MLA block {b} is not finite");
+            // THE FFN IS NOT OPTIONAL ON AN MLA BLOCK. `continue` used to skip straight to the next block, so every
+            // MLA block ran its attention and NOT its feed-forward -- which is why this driver and the prefill driver
+            // disagreed by 40x on the logit. The `continue` was written to skip the KDA code below, not the FFN.
+            match plan[b].ffn {
+                engine_core::glm53_plan::Ffn::Dense => {
+                    let fnorm_w = g.dequant_name(&format!("blk.{b}.ffn_norm.weight"))?;
+                    let fnw: Vec<f64> = fnorm_w.iter().map(|v| *v as f64).collect();
+                    let fin = engine_core::kda_block::gated_rms_norm(&x, &fnw, &vec![1.0f64; d], cfg.rms_norm_eps as f64);
+                    let wg = g.dequant_name(&format!("blk.{b}.ffn_gate.weight"))?;
+                    let wu = g.dequant_name(&format!("blk.{b}.ffn_up.weight"))?;
+                    let wd = g.dequant_name(&format!("blk.{b}.ffn_down.weight"))?;
+                    let inter = wg.len() / d;
+                    let gv: Vec<f64> = (0..inter).map(|r| (0..d).map(|c| wg[r * d + c] as f64 * fin[c]).sum()).collect();
+                    let uv: Vec<f64> = (0..inter).map(|r| (0..d).map(|c| wu[r * d + c] as f64 * fin[c]).sum()).collect();
+                    let act: Vec<f64> = gv.iter().zip(&uv).map(|(a, bb)| (a / (1.0 + (-a).exp())) * bb).collect();
+                    for r in 0..d {
+                        let mut acc = 0.0;
+                        for c in 0..act.len() { acc += wd[r * act.len() + c] as f64 * act[c]; }
+                        x[r] += acc;
+                    }
+                }
+                engine_core::glm53_plan::Ffn::Moe => {
+                    let (dn, used) = moe_ffn(&g, b, &x, d, cfg.rms_norm_eps as f64)?;
+                    for i in 0..d { x[i] += dn[i]; }
+                    moe_used = used;
+                }
+                engine_core::glm53_plan::Ffn::None => {}
+            }
             continue;
         }
         let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
