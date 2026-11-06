@@ -47,5 +47,54 @@ fn main() -> anyhow::Result<()> {
     }
     anyhow::ensure!(cases > 0, "no cases parsed from {path}");
     println!("PASS: {cases} cases agree with the independent numpy recurrence, worst {worst:.3e}");
+
+    // THE OTHER PIECES, same treatment: a conv, a low-rank gate and a gated RMS norm, each against numpy.
+    if let Some(path2) = std::env::args().nth(2) {
+        let t2 = std::fs::read_to_string(&path2)?;
+        let mut it = t2.lines();
+        let mut worst2 = 0.0f64;
+        while let Some(line) = it.next() {
+            let mut nums = |line: &str| -> Vec<f64> {
+                line.split_whitespace().skip(1).filter_map(|v| v.parse::<f64>().ok()).collect()
+            };
+            if let Some(rest) = line.strip_prefix("CONV ") {
+                let wv: Vec<f64> = rest.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+                let w: [f64; 4] = [wv[0], wv[1], wv[2], wv[3]];
+                let x = nums(it.next().unwrap());
+                let want = nums(it.next().unwrap());
+                let got = engine_core::kda_block::conv4_causal(&x, &w);
+                let e = got.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+                worst2 = worst2.max(e);
+                println!("conv:   worst = {e:.3e}");
+                anyhow::ensure!(e < 1e-12, "conv disagrees by {e:.3e}");
+            } else if line == "GATE" {
+                let x = nums(it.next().unwrap());
+                let aflat = nums(it.next().unwrap());
+                let bflat = nums(it.next().unwrap());
+                let bias = nums(it.next().unwrap());
+                let want = nums(it.next().unwrap());
+                let rows = 3;
+                let a: Vec<Vec<f64>> = (0..rows).map(|r| aflat[r * x.len()..(r + 1) * x.len()].to_vec()).collect();
+                let b: Vec<Vec<f64>> = (0..bias.len()).map(|r| bflat[r * rows..(r + 1) * rows].to_vec()).collect();
+                let got = engine_core::kda_block::low_rank_gate(&x, &a, &b, &bias);
+                let e = got.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+                worst2 = worst2.max(e);
+                println!("gate:   worst = {e:.3e}");
+                anyhow::ensure!(e < 1e-12, "gate disagrees by {e:.3e}");
+            } else if let Some(rest) = line.strip_prefix("RMS ") {
+                let eps: f64 = rest.trim().parse()?;
+                let x = nums(it.next().unwrap());
+                let w = nums(it.next().unwrap());
+                let g = nums(it.next().unwrap());
+                let want = nums(it.next().unwrap());
+                let got = engine_core::kda_block::gated_rms_norm(&x, &w, &g, eps);
+                let e = got.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+                worst2 = worst2.max(e);
+                println!("rmsnorm:worst = {e:.3e}");
+                anyhow::ensure!(e < 1e-12, "rmsnorm disagrees by {e:.3e}");
+            }
+        }
+        println!("PASS: conv, gate and rmsnorm agree with numpy, worst {worst2:.3e}");
+    }
     Ok(())
 }
