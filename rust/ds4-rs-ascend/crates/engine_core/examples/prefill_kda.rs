@@ -220,6 +220,14 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                     }
                 }
             }
+            engine_core::glm53_plan::Ffn::Moe => {
+                // THE SAME LIBRARY FUNCTION the decode driver calls. It was missing here entirely until iteration 213,
+                // which is what made the two drivers disagree at block 3.
+                for t in 0..n {
+                    let (dn, _used) = engine_core::glm53_ffn::moe_ffn(g, b, &x[t], c.d, c.eps)?;
+                    for i in 0..c.d { x[t][i] += dn[i]; }
+                }
+            }
             _ => {}
         }
         if b <= 4 { println!("BLK{b}-TENSOR prefill(after attn+FFN): {:?}", &x[0][..3]); }
