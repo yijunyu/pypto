@@ -181,7 +181,7 @@ mod tests {
                 t("blk.0.kda_q.weight"),
                 t("blk.0.ffn_gate_exps.weight"),
                 t("blk.1.attn_q_a.weight"),
-                t("blk.1.ffn.dense.w1.weight"),
+                t("blk.1.ffn_gate.weight"),
             ],
             tensor_table_offset: 0,
             tensor_data_offset: 0,

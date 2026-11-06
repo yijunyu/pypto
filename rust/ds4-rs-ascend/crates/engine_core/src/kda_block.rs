@@ -361,9 +361,9 @@ mod assembly_tests {
             heads,
             head_dim: d,
             a_log: vec![0.0; heads],
-            conv_q: [1.0, 0.0, 0.0, 0.0],
-            conv_k: [1.0, 0.0, 0.0, 0.0],
-            conv_v: [1.0, 0.0, 0.0, 0.0],
+            conv_q: vec![[1.0, 0.0, 0.0, 0.0]; heads * d],
+            conv_k: vec![[1.0, 0.0, 0.0, 0.0]; heads * d],
+            conv_v: vec![[1.0, 0.0, 0.0, 0.0]; heads * d],
             dt_bias: vec![-20.0; heads * d],
             beta: vec![1.0; heads],
             eps: 0.0,
@@ -383,7 +383,7 @@ mod assembly_tests {
         let v: Vec<f64> = (0..n).map(|i| 0.3 * i as f64).collect();
         let g = vec![0.0f64; n];
 
-        let got = block(&p, &q, &k, &v, &g, 1, &vec![1.0; d]);
+        let got = block(&p, &q, &k, &v, &g, 1, &vec![1.0; d], &vec![1.0; heads * d]);
 
         for h in 0..heads {
             let mut st = new_state(d);
@@ -403,8 +403,8 @@ mod assembly_tests {
         let p = params(heads, d);
         let n = tokens * heads * d;
         let x: Vec<f64> = (0..n).map(|i| ((i % 7) as f64) * 0.1).collect();
-        let a = block(&p, &x, &x, &x, &vec![0.0; n], tokens, &vec![1.0; d]);
-        let b = block(&p, &x, &x, &x, &vec![0.0; n], tokens, &vec![1.0; d]);
+        let a = block(&p, &x, &x, &x, &vec![0.0; n], tokens, &vec![1.0; d], &vec![1.0; n]);
+        let b = block(&p, &x, &x, &x, &vec![0.0; n], tokens, &vec![1.0; d], &vec![1.0; n]);
         assert_eq!(a.len(), n);
         assert_eq!(a, b);
     }
