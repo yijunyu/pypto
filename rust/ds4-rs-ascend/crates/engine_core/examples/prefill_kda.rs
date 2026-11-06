@@ -295,7 +295,8 @@ fn main() -> anyhow::Result<()> {
             for cc in 0..c.d { acc += head[r * c.d + cc] as f64 * one[0][cc]; }
             if acc > best.0 { best = (acc, r); }
         }
-        println!("ONE-TOKEN prefill after {blocks} blocks: {} ({:.6})", best.1, best.0);
+        let rms = (one[0].iter().map(|v| v * v).sum::<f64>() / c.d as f64).sqrt();
+        println!("ONE-TOKEN prefill after {blocks} blocks: {} ({:.6})  rms {rms:.6}", best.1, best.0);
         return Ok(());
     }
     let h1 = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?])?;
