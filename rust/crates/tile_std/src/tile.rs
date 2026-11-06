@@ -223,6 +223,14 @@ extern "C" {
     /// Returns a (ROWS × 1) tile where each row is the max of that row.
     pub fn __tile_reduce_max_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
+    /// Load ROWS x COLS from `gm` starting at element OFFSET.
+    ///
+    /// `__tile_load_f32` takes the GM ARG itself, so only element 0 of a tensor is reachable. The
+    /// engine's flash attention needs K/V block b of a `[128][512]` tensor, i.e. an offset of
+    /// `b * 8 * 512`; without this only block 0 exists. The emitter already resolves GM offsets for
+    /// other intrinsics, so this exposes machinery that was there.
+    pub fn __tile_load_at_f32(gm: *const f32, offset: u32, rows: u32, cols: u32) -> u32;
+
     /// Copy COUNT elements from SRC into DST starting at element OFFSET.
     ///
     /// Attention builds its 128 scores BLOCK BY BLOCK (16 blocks of 8) and needs to place each

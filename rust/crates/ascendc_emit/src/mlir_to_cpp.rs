@@ -252,6 +252,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_row_axpy_f32",
     "__tile_row_axpy2_f32",
     "__tile_slice_store_f32",
+    "__tile_load_at_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1560,6 +1561,11 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
             vec_buf_count += 1;
         }
         if line.contains("@__tile_slice_store_f32") {
+            vec_buf_count += 1;
+        }
+        // #2 of the four-things checklist. Missed on the first attempt, exactly as at rounds 20, 54
+        // and 61 -- which is why the checklist is written at this site and still has to be applied.
+        if line.contains("@__tile_load_at_f32") {
             vec_buf_count += 1;
         }
         if line.contains("@__tile_row_axpy_f32") {
@@ -5997,6 +6003,44 @@ fn generate_vector_compute_code(
             // this emitter uses (`Duplicate` fills from a scalar the compiler
             // knows), so it is a scalar loop -- the same shape the rope identity
             // uses, and honest about being a loop rather than a vector op.
+            // --- __tile_load_at_f32: load ROWS x COLS from an ELEMENT OFFSET ---
+            //
+            // The offset is an explicit operand, not a GEP the MLIR frontend has to carry: attention
+            // addresses K/V block b at `b * 8 * 512` and nothing else in the vocabulary could say so.
+            if line.contains("@__tile_load_at_f32") {
+                if let Some(result) = extract_result(line) {
+                    let args = extract_call_args(line);
+                    if args.len() >= 4 {
+                        let (gm_idx, _) = resolve_gm_with_offset(
+                            &args[0], &gm_arg_indices, &gm_offsets, &values,
+                        );
+                        let off_expr = resolve_value(&args[1], &values);
+                        let rows_expr = resolve_value(&args[2], &values);
+                        let cols_expr = resolve_value(&args[3], &values);
+                        let buf_idx = buf_counter;
+                        buf_counter += 1;
+                        buf_sizes.insert(
+                            buf_idx,
+                            format!("((({}) * ({})) + 7) / 8 * 8", rows_expr, cols_expr),
+                        );
+                        writeln!(
+                            code,
+                            "AscendC::DataCopy(buf{}, gm{}Tensor[{}], ({}) * ({}));",
+                            buf_idx, gm_idx, off_expr, rows_expr, cols_expr
+                        )
+                        .unwrap();
+                        vec_dirty_bufs.insert(buf_idx);
+                        vec_compute_dst_bufs.insert(buf_idx);
+                        ssa_to_buf.insert(result.clone(), buf_idx);
+                        values.insert(
+                            result,
+                            CppValue { expr: format!("{}", buf_idx), cpp_type: "uint32_t".to_string() },
+                        );
+                    }
+                }
+                continue;
+            }
+
             // --- __tile_slice_store_f32: place COUNT elements at OFFSET ---
             if line.contains("@__tile_slice_store_f32") {
                 if let Some(result) = extract_result(line) {
