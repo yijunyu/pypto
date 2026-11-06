@@ -56,6 +56,8 @@ engine/ascendc/proj_w8a8_engine_1x4096_k8192           dav-2201 proj_w8a8_engine
 engine/ascendc/proj_w8a8_engine_1x24_k16384           dav-2201 proj_w8a8_engine_1x24_k16384_do   200000 5 15 1e-5f 1e-6 3 24 16384
 # The MoE down-projection shape (mx4pk_2048_4096's extents, served by w8a8).
 engine/ascendc/proj_w8a8_engine_1x4096_k2048          dav-2201 proj_w8a8_engine_1x4096_k2048_do  9000000 5 15 1e-5f 1e-6 3 4096 2048
+# The engine's attention extent (64 heads x 512) through ONE scf.for; oracle 34 checks ALL heads.
+engine/ascendc/attn_sink_engine_64heads                 dav-2201 attn_sink_1blk_do                70000 4 34 1e-5f 1e-5 1 64 512
 # Attention primitives (certified 2026-11-06, bit-exact). The engine's flash kernel needs both.
 # NOTE: these are PRIMITIVE probes, not engine slots; they belong here so a regression is caught.
 engine/ascendc/../prim/col_expand_1x8_16                        dav-2201 ce_probe_do   128 2 18 1e-5f 1e-6 3 8 16
