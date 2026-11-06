@@ -130,7 +130,30 @@ fn main() -> anyhow::Result<()> {
     } else {
         DefaultsGlm5::from_gguf(&GgufFile::open(&path)?)?
     };
-    let plan = schedule(&GgufFile::open(&path)?)?;
+    // THE CONFIG AND THE SCHEDULE COME FROM DIFFERENT SHARDS. Kimi's shard 1 carries the metadata and NO tensors; the block
+    // tensors are in 2..13. So the keys are read from the first path and the TENSOR TABLE is merged across all of them --
+    // which is what `schedule_of` exists for. Reading both from the first path reported "hidden 0" and "no blk tensors",
+    // which were one fact seen twice.
+    let all_paths: Vec<PathBuf> = {
+        let mut v = vec![path.clone()];
+        v.extend(std::env::args().skip(2).map(PathBuf::from));
+        v
+    };
+    let merged_tensors: Vec<engine_core::gguf::TensorInfo> = {
+        let mut t = Vec::new();
+        for pp in &all_paths {
+            match GgufFile::open(pp) {
+                Ok(gf) => {
+                    println!("  shard {}: {} tensors", pp.file_name().and_then(|n| n.to_str()).unwrap_or("?"), gf.tensors.len());
+                    t.extend(gf.tensors);
+                }
+                Err(e) => println!("  shard {}: FAILED TO OPEN: {e}", pp.display()),
+            }
+        }
+        t
+    };
+    println!("merged {} tensors from {} shard(s)", merged_tensors.len(), all_paths.len());
+    let plan = engine_core::glm53_plan::schedule_of(&merged_tensors)?;
     let expert_scale = engine_core::glm53_ffn::expert_weights_scale(&GgufFile::open(&path)?)?;
     println!("expert_weights_scale = {expert_scale} (read from the file)");
     anyhow::ensure!(plan[0].attn == Attn::Kda, "block 0 is not KDA in this checkpoint");
@@ -139,7 +162,7 @@ fn main() -> anyhow::Result<()> {
     let g = {
         // MULTI-SHARD. A sharded checkpoint (Kimi K3 ships as 14 files, 10 of which are present) cannot be opened by path
         // alone, so any further arguments are treated as additional shards.
-        let extra: Vec<PathBuf> = std::env::args().skip(3).map(PathBuf::from).collect();
+        let extra: Vec<PathBuf> = std::env::args().skip(2).map(PathBuf::from).collect();
         if extra.is_empty() {
             ShardedGguf::open(&path)?
         } else {

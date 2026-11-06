@@ -72,10 +72,18 @@ pub fn schedule_of(tensors: &[crate::gguf::TensorInfo]) -> anyhow::Result<Vec<Bl
     let mut out = Vec::with_capacity(n);
     for b in 0..n {
         let has = |suffix: &str| g.tensors.iter().any(|t| t.name == format!("blk.{b}.{suffix}"));
-        let attn = if has("kda_q.weight") {
+        // A THIRD SPELLING. GLM 5.3 names the linear path `kda_q` and MLA `attn_q_a`; Kimi K3 names its linear path
+        // `attn_q` -- which matches NEITHER of the first two and was reported as "the schedule cannot be read from names"
+        // until the classifier learned it. `attn_q` cannot be confused with MLA, which always carries the `_a`.
+        let attn = if has("kda_q.weight") || (has("attn_q.weight") && !has("attn_q_a.weight")) {
             Attn::Kda
         } else if has("attn_q_a.weight") {
             Attn::Mla
+        } else if !tensors.iter().any(|t| t.name.starts_with(&format!("blk.{b}."))) {
+            // A block with NO tensors is ABSENT, not malformed: a sharded checkpoint may be missing shards, and the
+            // contiguous prefix before the first gap is what can actually be run. (Kimi K3 has 10 of 14 shards; blocks
+            // 0-61 are complete and 62.. are absent, so the schedule stops here rather than refusing the whole model.)
+            break;
         } else {
             anyhow::bail!("block {b} has neither kda_q nor attn_q_a: the schedule cannot be read from names");
         };
