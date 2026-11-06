@@ -187,6 +187,26 @@ pub const LAYER0_KERNELS: &[KernelSpec] = &[
     },
 ];
 
+/// Kernels a CALLER-side DECOMPOSITION may launch, beyond the engine's slots.
+///
+/// These are device-certified corpus artefacts, and they are deliberately NOT in [`LAYER0_KERNELS`]: that
+/// table is the KPI's denominator and describes what the ENGINE's layer code calls. A caller that must
+/// decompose a projection -- because the arm faults above ~1024 outputs at k=4096 -- needs a certified
+/// kernel to do it with, and adding one to the slot table would grow the denominator by a caller's
+/// convenience. This table is the alternative, and it is short and curated on purpose.
+pub const DECOMPOSITION_KERNELS: &[KernelSpec] = &[
+    KernelSpec {
+        name: "w8a8_slice_1x1024_k4096",
+        symbol: "proj_w8a8_engine_1x1024_k4096_mix_aiv",
+        partitioning: Partitioning::ByRow,
+    },
+    KernelSpec {
+        name: "w8a8_slice_1x512_k4096",
+        symbol: "proj_w8a8_engine_1x512_k4096_mix_aiv",
+        partitioning: Partitioning::ByRow,
+    },
+];
+
 /// The packed-MXFP4 matvec kernel for a `(d_in, d_out)` shape — the two routed-expert
 /// projections only.
 pub fn mx4pk_kernel_for(d_in: usize, d_out: usize) -> Option<&'static str> {
@@ -408,7 +428,7 @@ impl DeviceBinary {
                 );
             }
             let mut stubs: Vec<(&'static str, Box<u8>)> = Vec::new();
-            for k in LAYER0_KERNELS {
+            for k in LAYER0_KERNELS.iter().chain(DECOMPOSITION_KERNELS) {
                 let stub = Box::new(0u8);
                 let name = CString::new(k.symbol)?;
                 let rc = ffi::rtFunctionRegister(
@@ -605,7 +625,11 @@ impl DeviceLaunch {
                 }
                 dev.push(p);
             }
-            let out_bytes = out_len * std::mem::size_of::<f32>();
+            // THE OUTPUT NEEDS SLACK TOO. It is sized exactly to `out_len` floats, and the kernel writes
+            // in 32 B vector chunks; an unmapped write just past the end faults and the stream spins.
+            // Padding inputs without padding the output left the sliced launch hanging at 1024 outputs
+            // (4 KiB, the size where the over-write crosses a page).
+            let out_bytes = out_len * std::mem::size_of::<f32>() + 64 * 1024;
             let mut d_out: *mut u8 = std::ptr::null_mut();
             if ffi::aclrtMalloc(&mut d_out, out_bytes, ffi::MALLOC_HUGE_FIRST) != 0 {
                 cleanup(&dev);
