@@ -117,6 +117,13 @@ impl<D: KernelDispatcher> AttentionDispatcher for AscendAttentionDispatcher<D> {
         self.inner.shared_expert(params, ffn_norm, w_gate, w_up, shared_dim, clamp)
     }
 
+    /// ROUTED: the down projection goes through `KernelDispatcher::matvec_f32` (the w8a8 kernels on
+    /// device); the hc expand stays here because it is elementwise and cheap.
+    ///
+    /// The two fidelity switches are honoured by FALLING BACK to the reference rather than by
+    /// reimplementing what they select: `DS4_Q8_0_ACT` rounds activations through q8_0 and
+    /// `DS4_MATVEC_F32_FIDELITY` selects a different accumulation order. Reimplementing either here
+    /// would duplicate logic that lives in `engine_core` and drift from it.
     fn shared_down_hc_expand_add(
         &self,
         params: &LayerParams,
@@ -127,9 +134,29 @@ impl<D: KernelDispatcher> AttentionDispatcher for AscendAttentionDispatcher<D> {
         hc_split_post: &[f32],
         hc_split_comb: &[f32],
     ) -> Vec<f32> {
-        self.inner.shared_down_hc_expand_add(
-            params, shared_mid, w_down, routed_out, after_attn_hc, hc_split_post, hc_split_comb,
-        )
+        let q80 = std::env::var("DS4_Q8_0_ACT").ok().as_deref() == Some("1");
+        let fidelity = std::env::var("DS4_MATVEC_F32_FIDELITY").ok().as_deref() == Some("1");
+        if q80 || fidelity {
+            return self.inner.shared_down_hc_expand_add(
+                params, shared_mid, w_down, routed_out, after_attn_hc, hc_split_post, hc_split_comb,
+            );
+        }
+        let d_embd = params.d_embd as usize;
+        let n_hc = params.n_hc as usize;
+        let shared_out = self.kernels.matvec_f32(w_down, shared_mid, d_embd);
+        let mut after = vec![0.0f32; n_hc * d_embd];
+        for dst in 0..n_hc {
+            let base = dst * d_embd;
+            let w_post = hc_split_post[dst];
+            for e in 0..d_embd {
+                let mut acc = w_post * (shared_out[e] + routed_out[e]);
+                for src in 0..n_hc {
+                    acc += hc_split_comb[dst + src * n_hc] * after_attn_hc[src * d_embd + e];
+                }
+                after[base + e] = acc;
+            }
+        }
+        after
     }
 
 }
@@ -186,5 +213,61 @@ mod tests {
         for v in q.iter().chain(k.iter()) {
             assert!((v - 1.0).abs() < 1e-3, "expected ~1.0 after RMS norm, got {v}");
         }
+    }
+}
+
+#[cfg(test)]
+mod routed_tests {
+    use super::*;
+    use engine_core::dispatch::CpuDispatcher;
+
+    fn params(d_embd: u32, n_hc: u32) -> LayerParams {
+        LayerParams {
+            layer_idx: 0, d_embd, n_hc, n_head: 2, head_dim: 4, n_rot: 2, n_lora_q: 6, n_lora_kv: 4,
+            hc_sinkhorn_iter: 1, hc_eps: 1e-6, rms_eps: 1e-6, rope_orig_ctx: 4096,
+            rope_freq_base: 10000.0, rope_freq_scale: 1.0, rope_ext_factor: 0.0, rope_attn_factor: 1.0,
+            compress_ratio: 0, n_out_group: 1,
+        }
+    }
+
+    #[test]
+    fn the_routed_down_projection_matches_the_reference() {
+        let p = params(4, 2);
+        let sd = 3usize;
+        let shared_mid: Vec<f32> = (0..sd).map(|i| 0.5 + i as f32 * 0.25).collect();
+        let w_down: Vec<f32> = (0..4 * sd).map(|i| ((i % 7) as f32 - 3.0) * 0.1).collect();
+        let routed: Vec<f32> = (0..4).map(|i| i as f32 * 0.05).collect();
+        let after_attn: Vec<f32> = (0..8).map(|i| (i as f32 - 3.5) * 0.02).collect();
+        let post = vec![1.0f32, 0.5];
+        let comb = vec![0.25f32, 0.5, 0.75, 1.0];
+
+        let want = CpuAttentionDispatcher.shared_down_hc_expand_add(
+            &p, &shared_mid, &w_down, &routed, &after_attn, &post, &comb,
+        );
+        let got = AscendAttentionDispatcher::new(CpuDispatcher).shared_down_hc_expand_add(
+            &p, &shared_mid, &w_down, &routed, &after_attn, &post, &comb,
+        );
+        assert_eq!(got.len(), want.len());
+        for (a, b) in got.iter().zip(&want) {
+            assert!((a - b).abs() <= 1e-5, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn a_zero_down_projection_still_carries_the_hc_path() {
+        // Without w_down the result is the hc combination alone -- non-zero when after_attn_hc is.
+        // A function that returned zeros would pass a weaker test that only compared to the reference
+        // if the reference were also zero, so this pins that the path is live.
+        let p = params(4, 2);
+        let shared_mid = vec![1.0f32; 3];
+        let w_down = vec![0.0f32; 12];
+        let routed = vec![0.0f32; 4];
+        let after_attn: Vec<f32> = vec![1.0; 8];
+        let post = vec![1.0f32, 1.0];
+        let comb = vec![1.0f32, 0.0, 0.0, 1.0];
+        let got = AscendAttentionDispatcher::new(CpuDispatcher).shared_down_hc_expand_add(
+            &p, &shared_mid, &w_down, &routed, &after_attn, &post, &comb,
+        );
+        assert!(got.iter().all(|v| (*v - 1.0).abs() < 1e-6), "{got:?}");
     }
 }
