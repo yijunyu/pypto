@@ -160,14 +160,29 @@ pub const LAYER0_KERNELS: &[KernelSpec] = &[
     // grew from layer0.cpp's eleven to thirteen (merge_pto.py layer0.cpp + the two mx4pk
     // raw cpps -> layer13.cpp -> ccec). Signature (w nibble-planes, halved f32 scales, x
     // PERMUTED, out) — see mxfp4_repack for both transforms and matvec_ref for the oracle.
+    // THE EXPERT MATVECS, now declared as w8a8 SOCKETS. The deployment quantisation is w8a8 (the goal
+    // says so, and the checkpoint's own tensors are I8 + per-output-channel scale/offset), while the
+    // packed-MXFP4 form is corpus evidence only. The old `mx4pk_*` names described a format the
+    // deployment does not use, and keeping them while swapping the implementation would have left the
+    // name lying about the layout -- the defect this campaign has spent rounds removing.
+    //
+    // The symbols are UNMANGLED plus CANN's `_mix_aiv` suffix, because these kernels are emitted as
+    // `extern "C"` (verified by `nm` on the extracted `.aicore_binary`, iteration 111 -- the C++
+    // `_Z30...PfS_S_S_S_` form I predicted was wrong).
+    //
+    // THE ARGUMENTS STILL DO NOT MATCH, and that is the one piece not done: the launch
+    // (`matvec_mx4pk`) marshals packed nibble planes, halved scales and a PERMUTED x, which is what
+    // the engine's expert storage holds. A w8a8 socket needs (x, w_i8, per-channel scale, offset) and
+    // therefore w8a8 expert STORAGE. Registering these names means the engine no longer claims a
+    // format it will not use; it does not mean the MoE runs on device yet.
     KernelSpec {
-        name: "mx4pk_4096_2048",
-        symbol: "_Z19ds4_mx4pk_4096_2048PaPfS0_S0_",
+        name: "w8a8_experts_4096_2048",
+        symbol: "w8a8_experts_1x2048_k4096_mix_aiv",
         partitioning: Partitioning::ByRow,
     },
     KernelSpec {
-        name: "mx4pk_2048_4096",
-        symbol: "_Z19ds4_mx4pk_2048_4096PaPfS0_S0_",
+        name: "w8a8_experts_2048_4096",
+        symbol: "w8a8_experts_1x4096_k2048_mix_aiv",
         partitioning: Partitioning::ByRow,
     },
 ];
@@ -175,9 +190,11 @@ pub const LAYER0_KERNELS: &[KernelSpec] = &[
 /// The packed-MXFP4 matvec kernel for a `(d_in, d_out)` shape — the two routed-expert
 /// projections only.
 pub fn mx4pk_kernel_for(d_in: usize, d_out: usize) -> Option<&'static str> {
+    // The slots are w8a8 sockets now. The function keeps its name so every existing caller still
+    // compiles and still asks the same question; what changed is which kernels ANSWER it.
     match (d_in, d_out) {
-        (4096, 2048) => Some("mx4pk_4096_2048"),
-        (2048, 4096) => Some("mx4pk_2048_4096"),
+        (4096, 2048) => Some("w8a8_experts_4096_2048"),
+        (2048, 4096) => Some("w8a8_experts_2048_4096"),
         _ => None,
     }
 }
@@ -920,6 +937,18 @@ impl crate::launch::KernelLaunch for DeviceLaunch {
         x_perm: &[f32],
         d_out: usize,
     ) -> Result<Vec<f32>> {
+        // THE SOCKETS ARE w8a8 NOW AND THIS LAUNCH STILL MARSHALS THE PACKED FORM. Calling it would
+        // pass four packed arguments to a five-argument kernel -- a crash or silent corruption, not a
+        // wrong number. So it refuses, the MoE falls back to the host, and the missing piece has a
+        // name: **w8a8 expert storage**. Registering w8a8 slot names without this guard would have
+        // moved the failure from "not implemented" to "undefined behaviour", which is strictly worse.
+        bail!(
+            "matvec_mx4pk: the slot `{}` is a w8a8 socket now, but this launch still marshals packed \
+             MXFP4 (nibble planes, halved scales, permuted x). Serving it needs w8a8 EXPERT STORAGE \
+             -- int8 codes with a per-output-channel scale and offset -- not a different launch.",
+            spec.name
+        );
+
         let d_in = x_perm.len();
         let Some(name) = mx4pk_kernel_for(d_in, d_out) else {
             bail!(
@@ -1034,6 +1063,22 @@ mod tests {
     #[test]
     fn symbols_are_cpp_mangled_and_self_consistent() {
         for k in LAYER0_KERNELS {
+            // TWO SYMBOL FORMS, both verified against `nm` on an extracted `.aicore_binary`:
+            //   * `_Z...`   -- a C++ `__global__` function, which is how the engine's own
+            //                  layer0 kernels are written (`_Z19ds4_mx4pk_...PaPfS0_S0_`);
+            //   * `<name>_mix_aiv` -- an `extern "C"` kernel as CANN emits it from this tree's tiles
+            //                  (`w8a8_experts_1x2048_k4096_mix_aiv`). Predicting the C++ form from the
+            //                  signature was WRONG (iteration 111), so the check accepts the observed
+            //                  form instead of asserting the assumed one.
+            if k.symbol.ends_with("_mix_aiv") && !k.symbol.starts_with("_Z") {
+                assert!(
+                    k.symbol.trim_end_matches("_mix_aiv").chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                    "{}: {} is neither mangled nor a plain `_mix_aiv` entry",
+                    k.name,
+                    k.symbol
+                );
+                continue;
+            }
             let rest = k
                 .symbol
                 .strip_prefix("_Z")
