@@ -74,8 +74,11 @@ fn main() -> anyhow::Result<()> {
         // The layer's own attention norm, q/kv projections -- the caller's job in this API.
         let p = format!("layers.{layer_idx}");
         let gamma = pkg.f32_tensor(&format!("{p}.attn_norm.weight"))?;
-        let xlast = &cur_hc[..d];
-        let n = rms_norm(xlast, &gamma, 1e-6);
+        // THE COLLAPSE, not slot 0. The engine's prefix collapses all `n_hc` slots internally; the
+        // q/kv projections the caller computes must see the SAME collapsed hidden state, or the two
+        // halves of the attention block disagree about what the token is.
+        let collapsed = engine_core::decode_step::hc_mean_collapse(&cur_hc, n_hc, d);
+        let n = rms_norm(&collapsed, &gamma, 1e-6);
         let wq_a = pkg.dequant_tensor(&format!("{p}.attn.wq_a.weight"))?;
         let qn = pkg.f32_tensor(&format!("{p}.attn.q_norm.weight"))?;
         let q_ln = rms_norm(&matvec(&wq_a, &n, lora_q), &qn, 1e-6);
@@ -136,7 +139,8 @@ fn main() -> anyhow::Result<()> {
 
     // Head: final norm then head.weight, on the first hc slot's collapse.
     let fgn = pkg.f32_tensor("norm.weight")?;
-    let hf = rms_norm(&cur_hc[..d], &fgn, 1e-6);
+    let collapsed_final = engine_core::decode_step::hc_mean_collapse(&cur_hc, n_hc, d);
+    let hf = rms_norm(&collapsed_final, &fgn, 1e-6);
     let head = pkg.f32_tensor("head.weight")?;
     let logits = matvec(&head, &hf, vocab);
     let best = logits.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i, _)| i).unwrap();
