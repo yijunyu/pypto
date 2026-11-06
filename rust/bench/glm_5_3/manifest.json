@@ -48,10 +48,10 @@
   "searched": "for a refused kernel, the tiling tile-search chose instead."
  },
  "totals": {
-  "kernels": 22,
-  "tile": 22,
+  "kernels": 27,
+  "tile": 27,
   "pto": 12,
-  "ascendc": 14,
+  "ascendc": 19,
   "tile_rs": 0,
   "pto_refused": 8,
   "rescued_by_search": 4,
@@ -60,7 +60,7 @@
   "ascendc_refused": 8,
   "tile_rs_refused": 6,
   "reshaped": 0,
-  "device_verified": 13
+  "device_verified": 18
  },
  "kernels": {
   "argmax_glm53_1x154880": {
@@ -272,6 +272,41 @@
     "tolerance": 1e-05
    },
    "verify_args": "dav-2201 glm53_kda_f_b_do 9000000 5 15 1e-5f 1e-6 1 8192 128"
+  },
+  "kda_k_glm53_1x8192_k4096": {
+   "tile": "tile/kda_k_glm53_1x8192_k4096.tile",
+   "pto": null,
+   "ascendc": "ascendc/kda_k_glm53_1x8192_k4096.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2: elements=8192 wrong=0 max_abs 6.250e+01 max_rel 2.514e-07 (oracle 15). kda_k, 8192 outputs from k=4096.",
+   "verify_args": "dav-2201 glm53_kda_k_do 12000000 5 15 1e-5f 1e-6 1 8192 4096"
+  },
+  "kda_v_glm53_1x8192_k4096": {
+   "tile": "tile/kda_v_glm53_1x8192_k4096.tile",
+   "pto": null,
+   "ascendc": "ascendc/kda_v_glm53_1x8192_k4096.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2: elements=8192 wrong=0 max_abs 6.250e+01 max_rel 2.514e-07 (oracle 15). kda_v, 8192 outputs from k=4096.",
+   "verify_args": "dav-2201 glm53_kda_v_do 12000000 5 15 1e-5f 1e-6 1 8192 4096"
+  },
+  "kda_g_a_glm53_1x128_k4096": {
+   "tile": "tile/kda_g_a_glm53_1x128_k4096.tile",
+   "pto": null,
+   "ascendc": "ascendc/kda_g_a_glm53_1x128_k4096.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2: elements=128 wrong=0 max_abs 4.650e+01 max_rel 1.764e-07 (oracle 15). the KDA output-gate down-projection, 128 from k=4096.",
+   "verify_args": "dav-2201 glm53_kda_g_a_do 9000000 5 15 1e-5f 1e-6 1 128 4096"
+  },
+  "kda_g_b_glm53_1x8192_k128": {
+   "tile": "tile/kda_g_b_glm53_1x8192_k128.tile",
+   "pto": null,
+   "ascendc": "ascendc/kda_g_b_glm53_1x8192_k128.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2: elements=8192 wrong=0 max_abs 0.000e+00 max_rel 0.000e+00 (BIT-EXACT) (oracle 15). the KDA output-gate up-projection, 8192 from k=128.",
+   "verify_args": "dav-2201 glm53_kda_g_b_do 9000000 5 15 1e-5f 1e-6 1 8192 128"
+  },
+  "kda_f_a_glm53_1x128_k4096": {
+   "tile": "tile/kda_f_a_glm53_1x128_k4096.tile",
+   "pto": null,
+   "ascendc": "ascendc/kda_f_a_glm53_1x128_k4096.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2: elements=128 wrong=0 max_abs 4.650e+01 max_rel 1.764e-07 (oracle 15). the KDA forget-gate down-projection, 128 from k=4096.",
+   "verify_args": "dav-2201 glm53_kda_f_a_do 9000000 5 15 1e-5f 1e-6 1 128 4096"
   }
  },
  "tile_rs_removed_2026_11_02": {

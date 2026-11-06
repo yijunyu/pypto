@@ -114,3 +114,8 @@ done <<< "${ROWS}"
 
 printf '\n%s\n' "$([ "${failed}" -eq 0 ] && echo "all kernels passed" || echo "${failed} kernel(s) failed")"
 exit $([ "${failed}" -eq 0 ] && echo 0 || echo 1)
+glm_5_3/ascendc/kda_k_glm53_1x8192_k4096                dav-2201 glm53_kda_k_do                   12000000 5 15 1e-5f 1e-6 1 8192 4096
+glm_5_3/ascendc/kda_v_glm53_1x8192_k4096                dav-2201 glm53_kda_v_do                   12000000 5 15 1e-5f 1e-6 1 8192 4096
+glm_5_3/ascendc/kda_g_a_glm53_1x128_k4096                dav-2201 glm53_kda_g_a_do                 9000000 5 15 1e-5f 1e-6 1 128 4096
+glm_5_3/ascendc/kda_g_b_glm53_1x8192_k128                dav-2201 glm53_kda_g_b_do                 9000000 5 15 1e-5f 1e-6 1 8192 128
+glm_5_3/ascendc/kda_f_a_glm53_1x128_k4096                dav-2201 glm53_kda_f_a_do                 9000000 5 15 1e-5f 1e-6 1 128 4096
