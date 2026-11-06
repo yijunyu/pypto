@@ -4371,6 +4371,28 @@ fn generate_vector_kernel(
                 .unwrap();
             } else {
                 // Compute-only buffer: TBuf<VECCALC>
+                // DS4_DUMP_SIZES=1 names every buffer, its size STRING and what the fold made of
+                // it. Written because two rounds of eliminating candidates ("use literals",
+                // "shrink the shape") could not say WHICH buffer the sizer failed on, and one
+                // print does.
+                if std::env::var_os("DS4_DUMP_SIZES").is_some() {
+                    let raw = vctx
+                        .buf_sizes
+                        .get(&buf_idx)
+                        .cloned()
+                        .unwrap_or_else(|| "<none>".to_string());
+                    let folded = vctx
+                        .buf_sizes
+                        .get(&buf_idx)
+                        .and_then(|s| fold_size(s))
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "UNFOLDABLE".to_string());
+                    eprintln!(
+                        "[sizes] buf{} -> phys{} = {} B  elems={}  expr=`{}`  etype={:?}",
+                        buf_idx, phys, bytes, folded, raw,
+                        vctx.buf_elem_types.get(&buf_idx)
+                    );
+                }
                 writeln!(cpp, "        pipe.InitBuffer(tbuf{}, {});", phys, bytes).unwrap();
             }
         }
