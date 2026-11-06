@@ -60,7 +60,7 @@
   "ascendc_refused": 8,
   "tile_rs_refused": 6,
   "reshaped": 0,
-  "device_verified": 8
+  "device_verified": 9
  },
  "kernels": {
   "argmax_glm53_1x154880": {
@@ -206,7 +206,14 @@
    "pto_sha256_16": "4b3e8548b5ef6595",
    "ascendc": "ascendc/kda_delta_glm53_1x128.cpp",
    "ascendc_sha256_16": "465221d2d8a9a693",
-   "width_source": "registry LINEAR_ATTN_HEAD_DIM = 128 (a NAME MAPPING: glm5-next's linear attention path is the delta-net blocks), weaker than the kv_b provenance; the resulting kernel is shape-identical to kda_delta_k3_1x128, so it adds an attribution rather than a measurement"
+   "width_source": "registry LINEAR_ATTN_HEAD_DIM = 128 (a NAME MAPPING: glm5-next's linear attention path is the delta-net blocks), weaker than the kv_b provenance; the resulting kernel is shape-identical to kda_delta_k3_1x128, so it adds an attribution rather than a measurement",
+   "device_check": "PASS 2026-11-06 on 910B2 (CANN 9.2.0, dav-2201): 128/128 elements, max_abs 0.000e+00, max_rel 0.000e+00 (BIT-EXACT) against an f64 oracle for the decay*delta recurrence. The delta rule at head_dim 128 -- the attention of 34 of GLM 5.3's 46 blocks.",
+   "device_metrics": {
+    "elements": 128,
+    "max_abs": 0.0,
+    "head_dim": 128,
+    "tolerance": 1e-05
+   }
   },
   "routed_gate_up_glm53_8x2048": {
    "tile": "tile/routed_gate_up_glm53_8x2048.tile",
