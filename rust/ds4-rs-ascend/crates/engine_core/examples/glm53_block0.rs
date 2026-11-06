@@ -78,14 +78,77 @@ fn load_conv(g: &ShardedGguf, b: usize, which: &str, channels: usize) -> anyhow:
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("usage: glm53_block0 <gguf>"))?;
-    let cfg = DefaultsGlm5::from_gguf(&GgufFile::open(&path)?)?;
+    // TWO CONFIG READERS. `DefaultsGlm5` requires GLM's indexer keys, which Kimi K3's checkpoint does not carry at all --
+    // and it took a failed run to learn that rather than assuming the two models shared a config path. DS4_KIMI=1 reads
+    // the `kimi-k3.*` keys instead: 93 blocks, 96 heads, kda.head_dim 128, vocab 163840.
+    let cfg = if std::env::var_os("DS4_KIMI").is_some() {
+        let g = GgufFile::open(&path)?;
+        let u = |suffix: &str| -> u32 {
+            g.meta
+                .iter()
+                .find(|(k, _)| k.ends_with(suffix))
+                .and_then(|(_, v)| match v {
+                    engine_core::gguf::MetaValue::U32(x) => Some(*x),
+                    _ => None,
+                })
+                .unwrap_or(0)
+        };
+        let f = |suffix: &str| -> f32 {
+            g.meta
+                .iter()
+                .find(|(k, _)| k.ends_with(suffix))
+                .and_then(|(_, v)| match v {
+                    engine_core::gguf::MetaValue::F32(x) => Some(*x),
+                    _ => None,
+                })
+                .unwrap_or(1e-5)
+        };
+        // hidden_size is taken from the embedding's own dims rather than from a key Kimi does not carry.
+        let embd_dims = g
+            .tensors
+            .iter()
+            .find(|t| t.name == "token_embd.weight")
+            .map(|t| t.dims.clone())
+            .unwrap_or_default();
+        let hidden = embd_dims.first().copied().unwrap_or(0) as usize;
+        println!(
+            "kimi config: {} blocks, {} heads, kda head_dim {}, vocab {}, hidden {}, eps {:.1e}",
+            u("block_count"),
+            u("attention.head_count"),
+            u("kda.head_dim"),
+            u("vocab_size"),
+            hidden,
+            f("attention.layer_norm_rms_epsilon")
+        );
+        DefaultsGlm5 {
+            hidden_size: hidden,
+            rms_norm_eps: f("attention.layer_norm_rms_epsilon"),
+            vocab_size: u("vocab_size") as usize,
+            num_hidden_layers: u("block_count") as usize,
+            ..DefaultsGlm5::from_gguf(&GgufFile::open(std::path::Path::new("/Volumes/Data/models/glm-5.3-flash-gguf/GLM-5.3-Flash-Q2.gguf"))?)?
+        }
+    } else {
+        DefaultsGlm5::from_gguf(&GgufFile::open(&path)?)?
+    };
     let plan = schedule(&GgufFile::open(&path)?)?;
     let expert_scale = engine_core::glm53_ffn::expert_weights_scale(&GgufFile::open(&path)?)?;
     println!("expert_weights_scale = {expert_scale} (read from the file)");
     anyhow::ensure!(plan[0].attn == Attn::Kda, "block 0 is not KDA in this checkpoint");
     println!("config: hidden {} layers {}; block 0 = KDA", cfg.hidden_size, cfg.num_hidden_layers);
 
-    let g = ShardedGguf::open(&path)?;
+    let g = {
+        // MULTI-SHARD. A sharded checkpoint (Kimi K3 ships as 14 files, 10 of which are present) cannot be opened by path
+        // alone, so any further arguments are treated as additional shards.
+        let extra: Vec<PathBuf> = std::env::args().skip(3).map(PathBuf::from).collect();
+        if extra.is_empty() {
+            ShardedGguf::open(&path)?
+        } else {
+            let mut all = vec![path.clone()];
+            all.extend(extra);
+            println!("opening {} shard(s)", all.len());
+            ShardedGguf::open_paths(&all)?
+        }
+    };
     let d = cfg.hidden_size;
     // The tensors the file itself names for block 0 (read, not assumed).
     let wq = g.dequant_name("blk.0.kda_q.weight")?;
