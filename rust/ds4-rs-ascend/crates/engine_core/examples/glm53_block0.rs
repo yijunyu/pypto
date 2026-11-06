@@ -41,22 +41,18 @@ fn mla_block_1token(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) ->
     let wkva = dequant_either(&g, b, "kv_a_mqa")?;
     let lat = wkva.len() / d;
     let kva = mv(&wkva, &xin, d, lat);
+    // TWO LATENTS, ONE LAYOUT. `attn_kv_a_mqa` emits 576 values on Kimi and 512 on GLM; the 576 is 512 latent plus
+    // 64 rope, and `attn_kv_a_norm` (512 in both) is the width the v/k projections actually consume. Using kv_a's width
+    // as v_b's gave "v_b gives 10922 outputs" -- an average, not a width.
+    //
+    // With the layout [heads][per_head][lat] contiguous (both models: GLM v_b [512,256,64], Kimi v_b [512,128,96]),
+    // the per-head loop is exactly ONE matmul, so no per-head constant is needed at all.
+    let lat_v = dequant_either(&g, b, "kv_a_norm")?.len();
+    anyhow::ensure!(lat_v <= lat, "kv_a emits {lat} but the norm is {lat_v}"); // kv_a may emit MORE (rope tail)
     let wvb = dequant_either(&g, b, "v_b")?;
-    let v_out = wvb.len() / lat;
-    const PER_HEAD: usize = 256; // the latent per head; the same in both models (GLM 64x256, Kimi 96x256)
-    anyhow::ensure!(v_out % PER_HEAD == 0, "v_b gives {v_out} outputs, not a multiple of {PER_HEAD}");
-    let heads = v_out / PER_HEAD;
-    anyhow::ensure!(heads * PER_HEAD == q_out, "q_b gives {q_out} outputs, not {heads} x {PER_HEAD}");
-    let mut vcat = vec![0.0f64; heads * PER_HEAD];
-    for h in 0..heads {
-        for r in 0..256 {
-            let mut acc = 0.0;
-            for c in 0..512 {
-                acc += wvb[(h * 256 + r) * 512 + c] as f64 * kva[c];
-            }
-            vcat[h * 256 + r] = acc;
-        }
-    }
+    anyhow::ensure!(wvb.len() % lat_v == 0, "v_b is {} not a multiple of the latent {lat_v}", wvb.len());
+    let v_out = wvb.len() / lat_v;
+    let vcat = mv(&wvb, &kva[..lat_v], lat_v, v_out);
     // output: 16384 -> d
     let wo = g.dequant_name(&format!("blk.{b}.attn_output.weight"))?;
     Ok(mv(&wo, &vcat, v_out, d))
