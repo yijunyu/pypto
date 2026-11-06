@@ -97,18 +97,22 @@ def kernels(s):
         ("output", D),
         ("shexp_down", D),
     ]:
+        # A REAL PROJECTION, not a dot product. This helper used to emit
+        # `load x; load w; mul; reduce_sum; store 1x1` -- a single scalar, named
+        # `proj_<name>` and counted as a projection for sixty rounds. It is the w8a8
+        # matvec arm: (w, scale, offset, x, dst, n, k) -> n outputs, one per weight row.
+        # The arm was unusable above ~1280 rows until iteration 151 taught it to DMA its
+        # planes as tiles instead of reading them with a row-indexed scalar GM access.
         b = (
             c("z", 0)
-            + c("r", T)
-            + c("cr1", 1)
-            + c("cl", n)
-            + """    %x = llvm.call @__tile_load_f32(%arg0, %r, %cl) : (!llvm.ptr<1>, i32, i32) -> i32
-    %w = llvm.call @__tile_load_f32(%arg1, %r, %cl) : (!llvm.ptr<1>, i32, i32) -> i32
-    %m = llvm.call @__tile_mul_f32(%z, %x, %w, %r, %cl) : (i32, i32, i32, i32, i32) -> i32
-    %o = llvm.call @__tile_reduce_sum_f32(%z, %m, %r, %cl) : (i32, i32, i32, i32) -> i32
-    llvm.call @__tile_store_f32(%arg2, %o, %cr1, %cr1) : (!llvm.ptr<1>, i32, i32, i32) -> ()"""
+            + c("cr1x", 1)
+            + c("nn", n)
+            + c("kk", D)
+            + f"""    %xk = llvm.call @__tile_load_f32(%arg3, %cr1x, %kk) : (!llvm.ptr<1>, i32, i32) -> i32
+    %o = llvm.call @__tile_matvec_w8a8_f32(%arg0, %arg1, %arg2, %xk, %z, %nn, %kk) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32) -> i32
+"""
         )
-        out[f"proj_{name}_glm53_{T}x{n}"] = mod(f"glm53_proj_{name}", 3, b)
+        out[f"proj_{name}_glm53_{T}x{n}"] = mod(f"glm53_proj_{name}", 5, b)
 
     # --- 4. the MoE router: one row of D -> N_EXP scores, then top-k ---------
     ne, topk = s["N_EXP"], s["TOPK"]

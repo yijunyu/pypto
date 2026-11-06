@@ -60,7 +60,7 @@
   "ascendc_refused": 8,
   "tile_rs_refused": 6,
   "reshaped": 0,
-  "device_verified": 11
+  "device_verified": 7
  },
  "kernels": {
   "argmax_glm53_1x154880": {
@@ -121,7 +121,7 @@
    "tile_rs_refused": "refused bench/glm_5_3/pto/proj_kv_a_mqa_glm53_1x512.pto: tile `%pto8` has a partial or dynamic v_row; the lift requires the full logical tile",
    "ascendc_sha256_16": "875670ac34e2b96c",
    "pto_sha256_16": "4100c5bc20c06145",
-   "device_check": "PASS 2026-11-05 on 910B2: the output tile is now 1x1 and the kernel stores exactly one element; element 0 matches an f64 dot product to rel 0 (exact). It was declared 512 wide and computed one row, which is why it was SHAPE_LIMIT until the corpus decision to declare a decode projection as the dot product it is."
+   "device_check": "STALE -- CLEARED 2026-11-06. This row was certified as a 1x1 DOT PRODUCT; the generator now emits a real w8a8 matvec at the same name and width, and that new kernel FAILS against oracle 15 (4096 elements, 3511 wrong) because the oracle's argument convention differs. Do not credit until it is re-certified with the right oracle."
   },
   "proj_output_glm53_1x4096": {
    "tile": "tile/proj_output_glm53_1x4096.tile",
@@ -131,7 +131,7 @@
    "tile_rs_refused": "refused bench/glm_5_3/pto/proj_output_glm53_1x4096.pto: tile `%pto8` has a partial or dynamic v_row; the lift requires the full logical tile",
    "ascendc_sha256_16": "2c39fcfd205bd7ca",
    "pto_sha256_16": "8e9814b3ae3109b8",
-   "device_check": "PASS 2026-11-06 on 910B2: element-by-element PASS (oracle 2, 4096 outputs)"
+   "device_check": "STALE -- CLEARED 2026-11-06. This row was certified as a 1x1 DOT PRODUCT; the generator now emits a real w8a8 matvec at the same name and width, and that new kernel FAILS against oracle 15 (4096 elements, 3511 wrong) because the oracle's argument convention differs. Do not credit until it is re-certified with the right oracle."
   },
   "proj_q_a_glm53_1x1536": {
    "tile": "tile/proj_q_a_glm53_1x1536.tile",
@@ -141,7 +141,7 @@
    "tile_rs_refused": "refused bench/glm_5_3/pto/proj_q_a_glm53_1x1536.pto: tile `%pto8` has a partial or dynamic v_row; the lift requires the full logical tile",
    "ascendc_sha256_16": "0dcd6d7e1cd8aa12",
    "pto_sha256_16": "80d64281b4aa861d",
-   "device_check": "PASS 2026-11-06 on 910B2: element-by-element PASS (oracle 2, 1536 outputs)"
+   "device_check": "STALE -- CLEARED 2026-11-06. This row was certified as a 1x1 DOT PRODUCT; the generator now emits a real w8a8 matvec at the same name and width, and that new kernel FAILS against oracle 15 (4096 elements, 3511 wrong) because the oracle's argument convention differs. Do not credit until it is re-certified with the right oracle."
   },
   "proj_q_b_glm53_1x16384": {
    "tile": "tile/proj_q_b_glm53_1x16384.tile",
@@ -158,7 +158,7 @@
    "tile_rs_refused": "refused bench/glm_5_3/pto/proj_shexp_down_glm53_1x4096.pto: tile `%pto8` has a partial or dynamic v_row; the lift requires the full logical tile",
    "ascendc_sha256_16": "b9e5d1125845ed71",
    "pto_sha256_16": "b93a36434fd44dfa",
-   "device_check": "PASS 2026-11-05 on 910B2: the output tile is now 1x1 and the kernel stores exactly one element; element 0 matches an f64 dot product to rel 6.416e-08. It was declared 4096 wide and computed one row, which is why it was SHAPE_LIMIT until the corpus decision to declare a decode projection as the dot product it is."
+   "device_check": "STALE -- CLEARED 2026-11-06. This row was certified as a 1x1 DOT PRODUCT; the generator now emits a real w8a8 matvec at the same name and width, and that new kernel FAILS against oracle 15 (4096 elements, 3511 wrong) because the oracle's argument convention differs. Do not credit until it is re-certified with the right oracle."
   },
   "residual_add_glm53_1x4096": {
    "tile": "tile/residual_add_glm53_1x4096.tile",
