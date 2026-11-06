@@ -159,7 +159,12 @@ fn main() -> anyhow::Result<()> {
     println!("running blocks 0..{} of {}", plan.len().min(4), plan.len());
     let mut moe_used = 0usize;
     let t0 = std::time::Instant::now();
-    let upto = plan.len().min(env_blocks());
+    // THE TRUNK, NOT THE FILE. `glm5-next.block_count = 46` but `trunk_block_count = 45`: the last block is not
+    // part of the decode trunk, and running 46 puts one extra block in the residual stream. Found by auditing
+    // every metadata key against the implementation (skill rule 13c), not by any arithmetic check.
+    let trunk = std::env::var("GLM53_TRUNK").ok().and_then(|v| v.parse().ok()).unwrap_or(45usize);
+    let upto = plan.len().min(trunk).min(env_blocks());
+    println!("trunk: {upto} of {} blocks (block_count 46, trunk_block_count {trunk})", plan.len());
     for b in 0..upto {
         if plan[b].attn == Attn::Mla {
             let op = mla_block_1token(&g, b, &x, d, cfg.rms_norm_eps as f64)?;
