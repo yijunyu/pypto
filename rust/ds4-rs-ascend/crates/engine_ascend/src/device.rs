@@ -202,6 +202,12 @@ pub const DECOMPOSITION_KERNELS: &[KernelSpec] = &[
     },
     // The vocabulary band: a certified 4096-output w8a8 matvec at k=4096, used by a caller that
     // decomposes a 154,880-output head over the OUTPUT dimension (see w8a8_lm_head_banded).
+    // The same band width at k=2048, for bisecting the banded launch's k sensitivity.
+    KernelSpec {
+        name: "w8a8_band_k2048",
+        symbol: "w8a8_experts_1x4096_k2048_mix_aiv",
+        partitioning: Partitioning::ByRow,
+    },
     KernelSpec {
         name: "w8a8_lm_head_band",
         symbol: "glm53_proj_output_mix_aiv",
@@ -909,12 +915,24 @@ impl DeviceLaunch {
         inputs: &[(&[u8], bool)],
         out_len: usize,
     ) -> Result<Vec<f32>> {
-        let spec = KernelSpec {
-            name: Box::leak(name.to_string().into_boxed_str()),
-            symbol: Box::leak(symbol.to_string().into_boxed_str()),
-            partitioning,
+        // PREFER THE REGISTERED SPEC. `matvec_w8a8_experts` passes a spec borrowed from LAYER0_KERNELS and
+        // works; this function used to BUILD one on the fly every call, and the banded launch hung with it at
+        // both k=2048 and k=4096 -- the same width and k where the borrowed spec returns 1.130e-07. Building
+        // a second spec with the same name means the launcher sees a different `&KernelSpec` identity than
+        // the one it registered a stub against, which is the kind of difference that does not show in the
+        // C++ but changes what the runtime resolves.
+        let spec: &KernelSpec = if let Some(s) =
+            DECOMPOSITION_KERNELS.iter().find(|k| k.name == name)
+        {
+            s
+        } else {
+            Box::leak(Box::new(KernelSpec {
+                name: Box::leak(name.to_string().into_boxed_str()),
+                symbol: Box::leak(symbol.to_string().into_boxed_str()),
+                partitioning,
+            }))
         };
-        self.run_raw_cached(&spec, inputs, out_len)
+        self.run_raw_cached(spec, inputs, out_len)
     }
 
     fn run_raw_cached(

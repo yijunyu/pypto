@@ -14,12 +14,18 @@ use engine_ascend::device::{DeviceLaunch, Partitioning};
 use engine_ascend::launch::KernelLaunch;
 use std::path::PathBuf;
 
-const K: usize = 4096;        // lm_head's input width (GLM 5.3's D)
-const BAND: usize = 4096;     // outputs per band: the certified kernel's width
+// Defaults are lm_head's: k = GLM 5.3's D, band = the certified 4096-output kernel's width. Both are
+// overridable so the SAME code can bisect k on the same launch path (the banded launch hangs at k=4096
+// while matvec_w8a8_experts works at k=2048 -- see iteration 161).
+const K_DEFAULT: usize = 4096;
+const BAND: usize = 4096;
 
 fn main() -> anyhow::Result<()> {
     let elf = std::env::args().nth(1).ok_or_else(|| anyhow::anyhow!("usage: w8a8_lm_head_banded <elf> [bands]"))?;
     let bands: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(3);
+    let K: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(K_DEFAULT);
+    let kname = std::env::args().nth(4).unwrap_or_else(|| "w8a8_lm_head_band".to_string());
+    let ksym = std::env::args().nth(5).unwrap_or_else(|| "glm53_proj_output_mix_aiv".to_string());
     let dev = DeviceLaunch::open(std::path::Path::new(&elf), 0)?;
 
     // Deterministic synthetic w8a8 planes for `bands` bands; real weights are 154,880 x 4096 = 634 MB.
@@ -55,14 +61,19 @@ fn main() -> anyhow::Result<()> {
         let mut of = offset[lo..hi].to_vec();
         of.extend(std::iter::repeat_n(0.0f32, PAD / 4));
         let mut band = dev.run_by_symbol(
-            "w8a8_lm_head_band",
-            "glm53_proj_output_mix_aiv",
+            &kname,
+            &ksym,
             Partitioning::ByRow,
             &[
+                // THE SAME FLAGS THE WORKING PATH USES. `matvec_w8a8_experts` passes the weight and
+                // both plane buffers as PINNED (`true`) and only x as transient; this example passed all
+                // four as transient, which selects a different upload path in the launcher. The banded
+                // launch hung at both k=2048 and k=4096 with everything transient, while the expert
+                // launch at the same width and k=2048 returns 1.130e-07 with the planes pinned.
                 (unsafe { std::slice::from_raw_parts(x.as_ptr() as *const u8, x.len() * 4) }, false),
-                (unsafe { std::slice::from_raw_parts(w.as_ptr() as *const u8, w.len()) }, false),
-                (unsafe { std::slice::from_raw_parts(sc.as_ptr() as *const u8, sc.len() * 4) }, false),
-                (unsafe { std::slice::from_raw_parts(of.as_ptr() as *const u8, of.len() * 4) }, false),
+                (unsafe { std::slice::from_raw_parts(w.as_ptr() as *const u8, w.len()) }, true),
+                (unsafe { std::slice::from_raw_parts(sc.as_ptr() as *const u8, sc.len() * 4) }, true),
+                (unsafe { std::slice::from_raw_parts(of.as_ptr() as *const u8, of.len() * 4) }, true),
             ],
             BAND,
         )?;
