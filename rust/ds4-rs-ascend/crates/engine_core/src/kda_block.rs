@@ -151,3 +151,121 @@ mod tests {
         assert!(after < before * 1e-6, "heavy decay should wipe the state: {after} vs {before}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// The pieces around the recurrence. Each is a certified kernel's arithmetic, and each has the
+// property GLM 5.3's own tensor shapes imply — tested here rather than assumed.
+// ---------------------------------------------------------------------------------------------
+
+/// The 4-tap CAUSAL convolution, on one channel's stream.
+///
+/// `weights[j]` multiplies `x[t - j]`, with zeros before the start — that is what "causal" means and what
+/// the certified `kda_conv` kernel computes (a fixed-radius stencil, which is why it was expressible at
+/// all). Returns one output per input position.
+pub fn conv4_causal(x: &[f64], weights: &[f64; 4]) -> Vec<f64> {
+    (0..x.len())
+        .map(|t| {
+            let mut acc = 0.0;
+            for j in 0..4 {
+                if t >= j {
+                    acc += weights[j] * x[t - j];
+                }
+            }
+            acc
+        })
+        .collect()
+}
+
+/// A low-rank gate: `sigmoid(W_b W_a x)`, the shape of both the forget gate and the output gate
+/// (`kda_f_a [4096,128]` then `kda_f_b [128,8192]`, and the same pair for `g`).
+pub fn low_rank_gate(x: &[f64], a: &[Vec<f64>], b: &[Vec<f64>], bias: &[f64]) -> Vec<f64> {
+    let hidden: Vec<f64> = a
+        .iter()
+        .map(|row| row.iter().zip(x).map(|(w, v)| w * v).sum())
+        .collect();
+    b.iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let z: f64 = row.iter().zip(&hidden).map(|(w, h)| w * h).sum::<f64>() + bias[i];
+            1.0 / (1.0 + (-z).exp())
+        })
+        .collect()
+}
+
+/// The gated RMS norm applied at `head_dim` before the output projection: normalise, scale by `w`,
+/// then multiply by the gate. `eps` is the model's `attention.layer_norm_rms_epsilon`.
+pub fn gated_rms_norm(x: &[f64], w: &[f64], gate: &[f64], eps: f64) -> Vec<f64> {
+    let ms = x.iter().map(|v| v * v).sum::<f64>() / x.len() as f64;
+    let inv = 1.0 / (ms + eps).sqrt();
+    x.iter().zip(w).zip(gate).map(|((v, w), g)| v * inv * w * g).collect()
+}
+
+/// Split an `heads * head_dim` vector into per-head slices — GLM's `kda_q` is 8192 outputs for 64 heads
+/// of 128, and every piece above works one head at a time.
+pub fn split_heads(v: &[f64], heads: usize, head_dim: usize) -> Vec<&[f64]> {
+    assert_eq!(v.len(), heads * head_dim, "vector is not heads x head_dim");
+    (0..heads).map(|h| &v[h * head_dim..(h + 1) * head_dim]).collect()
+}
+
+#[cfg(test)]
+mod block_tests {
+    use super::*;
+
+    /// The convolution is CAUSAL: an impulse at t=0 reaches only t=0..3, and with the weights reversed it
+    /// reproduces them in order. A non-causal stencil would smear backwards and fail this.
+    #[test]
+    fn the_convolution_is_causal_and_reproduces_its_weights() {
+        let w = [0.5, -0.25, 0.125, 0.0625];
+        let mut x = vec![0.0f64; 8];
+        x[0] = 2.0;
+        let y = conv4_causal(&x, &w);
+        for j in 0..4 {
+            assert!((y[j] - w[j] * 2.0).abs() < 1e-12, "y[{j}]={} want {}", y[j], w[j] * 2.0);
+        }
+        for j in 4..8 {
+            assert!(y[j].abs() < 1e-12, "a causal conv must not reach forward: y[{j}]={}", y[j]);
+        }
+    }
+
+    /// A gate is a sigmoid: strictly inside (0, 1), monotone in its bias.
+    #[test]
+    fn the_low_rank_gate_is_bounded_and_monotone_in_its_bias() {
+        let x = vec![0.3f64; 4];
+        let a = vec![vec![0.1f64; 4]; 2];
+        let b = vec![vec![0.2f64; 2]; 3];
+        let g0 = low_rank_gate(&x, &a, &b, &[0.0; 3]);
+        let g1 = low_rank_gate(&x, &a, &b, &[1.0; 3]);
+        for i in 0..3 {
+            assert!(g0[i] > 0.0 && g0[i] < 1.0, "gate {i} = {}", g0[i]);
+            assert!(g1[i] > g0[i], "raising the bias must raise the gate: {} vs {}", g1[i], g0[i]);
+        }
+    }
+
+    /// The gated RMS norm normalises: two vectors differing only in SCALE give the same result once the
+    /// gate is 1, which is what "RMS" means. And a zero gate zeroes it.
+    #[test]
+    fn the_gated_rms_norm_is_scale_invariant_until_the_gate() {
+        let w = vec![1.0f64; 4];
+        let x = vec![1.0f64, 2.0, 3.0, 4.0];
+        // eps = 0: scale invariance is EXACT only without it, and with eps = 1e-5 scaling by 7 changes the
+        // relative weight of eps by 49, which is a real (and correct) difference rather than a defect.
+        let y = gated_rms_norm(&x, &w, &vec![1.0; 4], 0.0);
+        let scaled: Vec<f64> = x.iter().map(|v| v * 7.0).collect();
+        let z = gated_rms_norm(&scaled, &w, &vec![1.0; 4], 0.0);
+        for i in 0..4 {
+            assert!((y[i] - z[i]).abs() < 1e-9, "scale invariance broken at {i}: {} vs {}", y[i], z[i]);
+        }
+        let gated = gated_rms_norm(&x, &w, &vec![0.0; 4], 0.0);
+        assert!(gated.iter().all(|v| *v == 0.0));
+    }
+
+    /// Splitting is a partition: every element appears once, in order.
+    #[test]
+    fn split_heads_partitions_the_vector() {
+        let v: Vec<f64> = (0..12).map(|i| i as f64).collect();
+        let heads = split_heads(&v, 3, 4);
+        assert_eq!(heads.len(), 3);
+        assert_eq!(heads[0], &[0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(heads[2], &[8.0, 9.0, 10.0, 11.0]);
+    }
+}
