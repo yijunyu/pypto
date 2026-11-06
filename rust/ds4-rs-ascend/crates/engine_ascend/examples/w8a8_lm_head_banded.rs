@@ -62,7 +62,14 @@ fn main() -> anyhow::Result<()> {
         of.extend(std::iter::repeat_n(0.0f32, PAD / 4));
         // THE WORKING BODY, reached for a decomposition kernel: same marshalling, same flags, same
         // run_raw_cached call as `matvec_w8a8_experts`, with the spec taken from DECOMPOSITION_KERNELS.
-        let mut band = dev.matvec_w8a8_banded(&kname, &w, &sc, &of, &x, BAND)?;
+        // THE CONFIRMING RUN. `SLOT:name` drives the PROVEN method with a slot name; anything else goes
+        // through the decomposition clone. If the slot returns and the clone hangs at the same shape, on
+        // the same ELF, then the defect is the DUPLICATE REGISTRATION of one symbol under two names.
+        let mut band = if let Some(slot) = kname.strip_prefix("SLOT:") {
+            dev.matvec_w8a8_experts(slot, &w, &sc, &of, &x, BAND)?
+        } else {
+            dev.matvec_w8a8_banded(&kname, &w, &sc, &of, &x, BAND)?
+        };
         anyhow::ensure!(band.len() == BAND, "band {b} returned {}", band.len());
         got.append(&mut band);
     }
