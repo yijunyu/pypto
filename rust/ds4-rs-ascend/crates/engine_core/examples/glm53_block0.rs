@@ -58,6 +58,64 @@ fn env_blocks() -> usize {
     std::env::var("GLM53_BLOCKS").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX)
 }
 
+
+/// THE MoE FEED-FORWARD: router -> top-k -> the selected experts -> weighted sum, then the SHARED expert.
+///
+/// Every shape is the file's: `ffn_gate_inp [d, n_exp]` and `exp_probs_b.bias [n_exp]` route, and the stacked
+/// `ffn_{gate,up,down}_exps` hold `n_exp` experts. The shared expert is three `shexp` planes applied
+/// unconditionally. GLM's note says 288 experts and 8 used; both are read from the file rather than assumed.
+fn moe_ffn(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) -> anyhow::Result<(Vec<f64>, usize)> {
+    let mv = |w: &[f32], xv: &[f64], k: usize, n: usize, off: usize| -> Vec<f64> {
+        (0..n).map(|r| (0..k).map(|c| w[off + r * k + c] as f64 * xv[c]).sum()).collect()
+    };
+    let fnorm = g.dequant_name(&format!("blk.{b}.ffn_norm.weight"))?;
+    let fin = engine_core::kda_block::gated_rms_norm(x, &fnorm.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], eps);
+    // router
+    let rin = g.dequant_name(&format!("blk.{b}.ffn_gate_inp.weight"))?;
+    let n_exp = rin.len() / d;
+    let bias = g.dequant_name(&format!("blk.{b}.exp_probs_b.bias"))?;
+    let mut scores: Vec<(f64, usize)> = (0..n_exp)
+        .map(|e| {
+            let s: f64 = (0..d).map(|c| rin[c * n_exp + e] as f64 * fin[c]).sum::<f64>() + bias[e] as f64;
+            (s, e)
+        })
+        .collect();
+    scores.sort_by(|a, b_| b_.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    let used = 8.min(n_exp);
+    // softmax over the selected
+    let mx = scores[0].0;
+    let exps: Vec<(f64, usize)> = scores[..used].iter().map(|(s, e)| ((s - mx).exp(), *e)).collect();
+    let z: f64 = exps.iter().map(|(w, _)| w).sum();
+    let gate_w = g.dequant_name(&format!("blk.{b}.ffn_gate_exps.weight"))?;
+    let up_w = g.dequant_name(&format!("blk.{b}.ffn_up_exps.weight"))?;
+    let dn_w = g.dequant_name(&format!("blk.{b}.ffn_down_exps.weight"))?;
+    anyhow::ensure!(gate_w.len() == up_w.len() && gate_w.len() % n_exp == 0, "stacked expert planes disagree");
+    let per = gate_w.len() / n_exp;           // values per expert
+    let inter = per / d;                       // rows per expert
+    anyhow::ensure!(inter * d == per, "expert plane {per} is not {inter} x {d}");
+    let dn_per = dn_w.len() / n_exp;
+    let mut acc = vec![0.0f64; d];
+    for (w, e) in if used == 0 { Vec::new() } else { exps } {
+        let wgt = w / z;
+        let g_ = mv(&gate_w, &fin, d, inter, e * per);
+        let u_ = mv(&up_w, &fin, d, inter, e * per);
+        let act: Vec<f64> = g_.iter().zip(&u_).map(|(a, b_)| (a / (1.0 + (-a).exp())) * b_).collect();
+        let dn = mv(&dn_w, &act, inter, d, e * dn_per);
+        for i in 0..d { acc[i] += wgt * dn[i]; }
+    }
+    // the shared expert, always applied
+    let sg = g.dequant_name(&format!("blk.{b}.ffn_gate_shexp.weight"))?;
+    let su = g.dequant_name(&format!("blk.{b}.ffn_up_shexp.weight"))?;
+    let sd = g.dequant_name(&format!("blk.{b}.ffn_down_shexp.weight"))?;
+    let sinter = sg.len() / d;
+    let sgv = mv(&sg, &fin, d, sinter, 0);
+    let suv = mv(&su, &fin, d, sinter, 0);
+    let sact: Vec<f64> = sgv.iter().zip(&suv).map(|(a, b_)| (a / (1.0 + (-a).exp())) * b_).collect();
+    let sdn = mv(&sd, &sact, sinter, d, 0);
+    for i in 0..d { acc[i] += sdn[i]; }
+    Ok((acc, used))
+}
+
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("usage: glm53_block0 <gguf>"))?;
@@ -95,6 +153,7 @@ fn main() -> anyhow::Result<()> {
     // a partial chain that says where it stopped is worth more than one that guesses.
     let first_mla = plan.iter().position(|b| b.attn == Attn::Mla).unwrap_or(plan.len());
     println!("running blocks 0..{} of {}", plan.len().min(4), plan.len());
+    let mut moe_used = 0usize;
     let t0 = std::time::Instant::now();
     let upto = plan.len().min(env_blocks());
     for b in 0..upto {
@@ -146,8 +205,12 @@ fn main() -> anyhow::Result<()> {
             let act: Vec<f64> = g_.iter().zip(&u_).map(|(a, b_)| (a / (1.0 + (-a).exp())) * b_).collect();
             let dn: Vec<f64> = (0..d).map(|r| (0..act.len()).map(|c| wd[r * act.len() + c] as f64 * act[c]).sum()).collect();
             for i in 0..d { x[i] += dn[i]; }
+        } else if plan[b].ffn == engine_core::glm53_plan::Ffn::Moe {
+            let (dn, used) = moe_ffn(&g, b, &x, d, cfg.rms_norm_eps as f64)?;
+            for i in 0..d { x[i] += dn[i]; }
+            moe_used = used;
         } else {
-            println!("  block {b}: FFN is {:?} and not implemented -- skipped, so this block is attention-only", plan[b].ffn);
+            println!("  block {b}: FFN is {:?} -- skipped", plan[b].ffn);
         }
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
         println!("block {b}: rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
@@ -187,7 +250,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
     anyhow::ensure!(checked == vocab, "only {checked} of {vocab} logits were computed");
-    println!("logits: {checked} finite, best {:.4} at id {}", best.0, best.1);
+    println!("logits: {checked} finite, best {:.4} at id {} (MoE used {moe_used} experts per block)", best.0, best.1);
     println!("TOKEN from GLM 5.3: {} (vocab {vocab})  ({:.1}s)", best.1, t1.elapsed().as_secs_f64());
     anyhow::ensure!(best.1 < vocab, "token id outside the vocabulary");
     println!("PASS: GLM 5.3 produced a token from its own weights, through the assembled blocks and its own head");

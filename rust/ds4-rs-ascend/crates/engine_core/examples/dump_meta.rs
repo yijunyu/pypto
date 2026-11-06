@@ -24,11 +24,11 @@ fn main() -> anyhow::Result<()> {
         }
     }
     println!("--- names containing expert/shexp in block 3 ---");
-    for t in g.tensors.iter().filter(|t| t.name.starts_with("blk.0.") && (t.name.contains("exp") || t.name.contains("shexp"))) {
+    for t in g.tensors.iter().filter(|t| t.name.starts_with("blk.4.") && (t.name.contains("exp") || t.name.contains("shexp"))) {
         println!("{}", t.name);
     }
     println!("--- every tensor of block 0 ---");
-    for t in g.tensors.iter().filter(|t| t.name.starts_with("blk.0.")) {
+    for t in g.tensors.iter().filter(|t| t.name.starts_with("blk.4.")) {
         println!("{} {:?} {:?}", t.name, t.dims, t.ttype);
     }
     println!("--- first 24 tensor names ---");
