@@ -97,18 +97,27 @@ fn load_conv(g: &ShardedGguf, b: usize, which: &str, channels: usize) -> anyhow:
 /// `attn_q`/`attn_k`/`attn_v`/`attn_output`. The forward was GLM-spelled throughout and failed on Kimi with
 /// "tensor not found: blk.0.kda_q.weight" -- the same class of mismatch the SCHEDULE hit one round earlier.
 fn dequant_either(g: &ShardedGguf, b: usize, base: &str) -> anyhow::Result<Vec<f32>> {
-    // THREE SPELLINGS AND TWO FORMS. `ssm_a` and `ssm_dt.bias` carry no `.weight` suffix, so the bare name must be
-    // tried as well as the suffixed one. (This resolver had regressed to two spellings after a `git checkout` in
-    // iteration 254 -- the third casualty of that revert, and the reason `ssm_a` was "not found".)
+    // CANDIDATES ARE PER-BASE, NOT PER-PREFIX. My previous version tried every prefix for every base, which meant
+    // `blk.N.ssm_a` was reachable from a call asking for a dt_bias -- a tensor that exists and is wrong. Worse, it used
+    // GLM's SUFFIXES as names (`"a"` for `kda_a_log`, `"bias"` for `kda_dt_bias`), so GLM stopped producing tokens after
+    // forty rounds of working.
+    //
+    //   GLM 5.3: kda_q/k/v, kda_output, kda_a_log, kda_dt_bias, kda_beta, kda_f_a/f_b, kda_g_a/g_b
+    //   Kimi K3: attn_q/k/v, attn_output, ssm_a,     ssm_dt.bias,  ssm_beta,  ssm_f_a/f_b,  ssm_g (DIRECT)
+    let names: Vec<String> = match base {
+        "a_log" => vec![format!("blk.{b}.kda_a_log.weight"), format!("blk.{b}.ssm_a")],
+        "dt_bias" => vec![format!("blk.{b}.kda_dt_bias.weight"), format!("blk.{b}.ssm_dt.bias")],
+        "beta" => vec![format!("blk.{b}.kda_beta.weight"), format!("blk.{b}.ssm_beta.weight")],
+        "g" => vec![format!("blk.{b}.kda_g.weight"), format!("blk.{b}.ssm_g.weight")],
+        other => vec![
+            format!("blk.{b}.kda_{other}.weight"),
+            format!("blk.{b}.attn_{other}.weight"),
+            format!("blk.{b}.ssm_{other}.weight"),
+        ],
+    };
     let mut last = None;
-    for name in [
-        format!("blk.{b}.kda_{base}.weight"),
-        format!("blk.{b}.attn_{base}.weight"),
-        format!("blk.{b}.ssm_{base}.weight"),
-        format!("blk.{b}.ssm_{base}"),
-        format!("blk.{b}.ssm_dt.bias"), // Kimi's dt bias
-    ] {
-        match g.dequant_name(&name) {
+    for name in &names {
+        match g.dequant_name(name) {
             Ok(v) => return Ok(v),
             Err(e) => {
                 if std::env::var_os("SPELL_DEBUG").is_some() {
