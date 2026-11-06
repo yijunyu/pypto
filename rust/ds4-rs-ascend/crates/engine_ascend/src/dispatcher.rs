@@ -62,6 +62,11 @@ pub struct AscendDispatcher<D: KernelDispatcher> {
     rms_norm_launch: Option<std::sync::Arc<dyn KernelLaunch>>,
     matvec_q8_launch: Option<std::sync::Arc<dyn KernelLaunch>>,
     matvec_mx4pk_launch: Option<std::sync::Arc<dyn KernelLaunch>>,
+    /// The w8a8 expert matvec launch. A SEPARATE field from `matvec_mx4pk_launch` because it is a
+    /// separate socket: five arguments (x, w, per-output-channel scale, offset, out) against the
+    /// packed form's four. Keeping one field for both would be the same "same extent, different
+    /// function" mistake the KPI reader was fixed for twice.
+    matvec_w8a8_experts_launch: Option<std::sync::Arc<dyn KernelLaunch>>,
     /// One launcher PER CHIP, for the routed-expert (MXFP4) matvecs. `moe_routed_step` picks
     /// `moe_devices[layer_idx % n]`, so each chip pins the expert weights for ITS layers — the
     /// 155 GB of MXFP4 experts (what SSD-streams today) then spread across chips' HBM instead of
@@ -134,6 +139,7 @@ impl<D: KernelDispatcher> AscendDispatcher<D> {
             rms_norm_launch: None,
             matvec_q8_launch: None,
             matvec_mx4pk_launch: None,
+            matvec_w8a8_experts_launch: None,
             moe_devices: Vec::new(),
             q8_planes: std::sync::Mutex::new(std::collections::HashMap::new()),
             q8_alias: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -340,6 +346,7 @@ impl<D: KernelDispatcher> AscendDispatcher<D> {
         // first chip rather than opening chips it would immediately drop.
         if has_mx4pk {
             self.matvec_mx4pk_launch = Some(dev0.clone());
+            self.matvec_w8a8_experts_launch = Some(dev0.clone());
             let mut moe = vec![dev0];
             for &id in &device_ids[1..] {
                 moe.push(std::sync::Arc::new(crate::device::DeviceLaunch::open(elf_path, id)?));
@@ -367,6 +374,13 @@ impl<D: KernelDispatcher> AscendDispatcher<D> {
         self
     }
 
+    /// Route the w8a8 expert matvec to a launcher. Separate from `with_matvec_mx4pk` on purpose: the
+    /// two sockets take different arguments, so a caller that wants w8a8 experts must say so.
+    pub fn with_matvec_w8a8_experts(mut self, l: Box<dyn KernelLaunch>) -> Self {
+        self.matvec_w8a8_experts_launch = Some(std::sync::Arc::from(l));
+        self
+    }
+
     /// Methods that actually run on an NPU — keyed on `KernelLaunch::is_device`, so a host fake
     /// exercising the whole path still reports nothing. See `launch`'s module note.
     pub fn offloaded_by(&self) -> Vec<&str> {
@@ -379,6 +393,11 @@ impl<D: KernelDispatcher> AscendDispatcher<D> {
         if let Some(l) = &self.matvec_q8_launch {
             if l.is_device() {
                 v.push("matvec_q8");
+            }
+        }
+        if let Some(l) = &self.matvec_w8a8_experts_launch {
+            if l.is_device() {
+                v.push("matvec_w8a8_experts");
             }
         }
         if let Some(l) = &self.matvec_mx4pk_launch {
