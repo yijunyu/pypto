@@ -253,6 +253,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_row_axpy2_f32",
     "__tile_slice_store_f32",
     "__tile_load_at_f32",
+    "__tile_fill_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1566,6 +1567,9 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         // #2 of the four-things checklist. Missed on the first attempt, exactly as at rounds 20, 54
         // and 61 -- which is why the checklist is written at this site and still has to be applied.
         if line.contains("@__tile_load_at_f32") {
+            vec_buf_count += 1;
+        }
+        if line.contains("@__tile_fill_f32") {
             vec_buf_count += 1;
         }
         if line.contains("@__tile_row_axpy_f32") {
@@ -6025,6 +6029,43 @@ fn generate_vector_compute_code(
             // this emitter uses (`Duplicate` fills from a scalar the compiler
             // knows), so it is a scalar loop -- the same shape the rope identity
             // uses, and honest about being a loop rather than a vector op.
+            // --- __tile_fill_f32: fill a tile with a COMPILE-TIME scalar ---
+            //
+            // Declared in `tile_std` since the beginning but never given an arm, so it was silently
+            // dropped -- the third intrinsic to be declared-and-unemitted, after the attention
+            // softmax needed it to build a broadcast out of `fill` + a k=1 matmul.
+            if line.contains("@__tile_fill_f32") {
+                if let Some(result) = extract_result(line) {
+                    let args = extract_call_args(line);
+                    if args.len() >= 3 {
+                        let scalar = args[1].trim().to_string();
+                        let rows_expr = resolve_value(&args[2], &values);
+                        let cols_expr = resolve_value(&args[3], &values);
+                        let buf_idx = buf_counter;
+                        buf_counter += 1;
+                        buf_sizes.insert(
+                            buf_idx,
+                            format!("((({}) * ({})) + 7) / 8 * 8", rows_expr, cols_expr),
+                        );
+                        writeln!(
+                            code,
+                            "AscendC::PipeBarrier<PIPE_ALL>();\n  \
+                             AscendC::Duplicate(buf{}, (float)({}), ({}) * ({}));",
+                            buf_idx, scalar, rows_expr, cols_expr
+                        )
+                        .unwrap();
+                        vec_dirty_bufs.insert(buf_idx);
+                        vec_compute_dst_bufs.insert(buf_idx);
+                        ssa_to_buf.insert(result.clone(), buf_idx);
+                        values.insert(
+                            result,
+                            CppValue { expr: format!("{}", buf_idx), cpp_type: "uint32_t".to_string() },
+                        );
+                    }
+                }
+                continue;
+            }
+
             // --- __tile_load_at_f32: load ROWS x COLS from an ELEMENT OFFSET ---
             //
             // The offset is an explicit operand, not a GEP the MLIR frontend has to carry: attention

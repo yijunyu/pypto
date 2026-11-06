@@ -33,6 +33,7 @@ L = []
 # others as `/* %cNAME */0`, which the UB sizer then cannot fold -- the whole buffer was split
 # evenly and the kernel faulted. `%cD`/`%cSB` were the cause, not the arithmetic.
 body = "".join(f"    %c{v} = llvm.mlir.constant({v} : i32) : i32\n" for v in (0, 1, SB, D, blocks))
+body += "    %f1 = llvm.mlir.constant(1.0 : f32) : f32\n"
 
 
 def call(res, fn, args, sig):
@@ -77,10 +78,10 @@ call("den", "__tile_reduce_sum_f32", ["c0", "e", "c1", ncol], "(i32, i32, i32, i
 # REMOVES the hazard instead of trying to order it.
 for b in range(blocks):
     call(f"vb{b}", "__tile_load_at_f32", ["kv", f"off{b}", "cSB", "cD"], f"({P}, i32, i32, i32)")
-    acc = call("acc", "__tile_matmul_f32", [f"vb{b}", "e", "c1", "cSB", "cD"],
-               "(i32, i32, i32, i32, i32, i32)") if b == 0 else call(
-        "acc", "__tile_matmul_f32", [f"vb{b}", "e", "c1", "cSB", "cD"],
-        "(i32, i32, i32, i32, i32, i32)")
+    # (dst dummy, a, b, m, k, n) -- SIX operands. Passing five left the arm unmatched and the call
+    # was SILENTLY DROPPED, which is how the accumulation produced nothing for two rounds.
+    acc = call("acc", "__tile_matmul_f32", ["c0", "e", f"vb{b}", "c1", "cSB", "cD"],
+               "(i32, i32, i32, i32, i32, i32, i32)")
 call("d2", "__tile_mul_f32", ["c0", "den", "den", "c1", "c1"], "(i32, i32, i32, i32, i32)")
 call("inv", "__tile_rsqrt_f32", ["c0", "d2", "c1", "c1"], "(i32, i32, i32, i32)")
 call("outv", "__tile_row_scale_f32", ["c0", acc, "inv", "c1", cD], "(i32, i32, i32, i32, i32)")
