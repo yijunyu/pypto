@@ -228,8 +228,9 @@
    "ascendc": "ascendc/routed_gate_up_glm53_8x2048.cpp",
    "ascendc_sha256_16": "bec566602a9fd3f7",
    "ascendc_chunked": true,
-   "device_check": "PASS 2026-11-05 on 910B2: 16384/16384 inside 1e-5 (max_rel 1.697e-07). Eight rows -- one per selected expert -- with CHUNKED emission; the PTO emitter refuses the same shape because eight 65536-byte tiles cannot share its budget, and that is recorded per representation rather than hidden.",
-   "routing_note": "Top-8: this is EIGHT rows, which is what makes it different from the shared expert's single-row gate/up. The expert INDEX is not modelled -- selection is the dispatch's job and the tile API has no indexed-weight accessor."
+   "device_check": "PASS 2026-11-06 on 910B2: elements=16384 wrong=0 max_abs 8.327e-06 max_rel 1.697e-07 (oracle 8). The eight-expert gate/up batch of GLM 5.3's MoE -- 8 x 2048 outputs.",
+   "routing_note": "Top-8: this is EIGHT rows, which is what makes it different from the shared expert's single-row gate/up. The expert INDEX is not modelled -- selection is the dispatch's job and the tile API has no indexed-weight accessor.",
+   "verify_args": ""
   },
   "routed_down_glm53_1x2048": {
    "tile": "tile/routed_down_glm53_1x2048.tile",
@@ -237,7 +238,8 @@
    "pto_sha256_16": "efa306d21476993d",
    "ascendc": "ascendc/routed_down_glm53_1x2048.cpp",
    "ascendc_sha256_16": "945062ccac43dc5b",
-   "device_check": "PASS 2026-11-05 on 910B2: element 0 matches an f64 dot product to 5.158e-08. One expert's down projection at MOE_INTER width, which is half the shared expert's D."
+   "device_check": "PASS 2026-11-06 on 910B2: element-by-element PASS (oracle 2, 2048 outputs). The routed expert down projection of GLM 5.3's MoE.",
+   "verify_args": ""
   },
   "kda_conv_glm53_1x8192_k4": {
    "tile": "tile/kda_conv_glm53_1x8192_k4.tile",
