@@ -8,9 +8,13 @@ body appended.
 
 usage: merge_kernels.py <out.cpp> <kernel.cpp> ...
 
-Verified as a mechanism (round 40): the combined unit builds and its `engine_rmsnorm_1_512_do`
-kernel passes on device. The w8a8 kernels inside the same unit failed at sync (507034) while passing
-standalone, so the merge is not yet equivalent for every kernel -- bisect before relying on it.
+VERIFIED (iteration 48): seven kernels in one unit build into a single binary carrying 14 matching
+symbols (each kernel's `__global__` entry and its `_do` launcher), and kernels from it pass on device
+-- `proj_w8a8_engine_1x1024_k4096_do` at wrong=0, 1.398e-07, 0.5957 ms.
+
+ALLOW A LONG TIMEOUT WHEN BUILDING THE MERGED UNIT. The compile of a multi-kernel translation unit
+takes minutes, and a 700-800 s cap kills it mid-build, producing "no result" that looks exactly like
+a device fault. Two rounds were lost to that in this campaign before the raw output was read.
 """
 import pathlib
 import sys
