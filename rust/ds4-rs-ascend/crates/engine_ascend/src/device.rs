@@ -576,6 +576,101 @@ impl DeviceLaunch {
         Ok(())
     }
 
+    /// Launch with all inputs inside ONE device allocation, at aligned offsets.
+    ///
+    /// The harness that certifies these kernels passes four pointers into a SINGLE allocation; this
+    /// launcher has always passed one allocation per input. If a kernel's vector chunks assume
+    /// contiguity, per-buffer slack cannot substitute for it -- which is the hypothesis this entry point
+    /// exists to test, and the reason it is a separate method rather than a change to `run_raw_cached`.
+    pub fn run_by_symbol_contiguous(
+        &self,
+        name: &str,
+        symbol: &str,
+        partitioning: Partitioning,
+        inputs: &[&[u8]],
+        out_len: usize,
+    ) -> Result<Vec<f32>> {
+        let spec = KernelSpec {
+            name: Box::leak(name.to_string().into_boxed_str()),
+            symbol: Box::leak(symbol.to_string().into_boxed_str()),
+            partitioning,
+        };
+        const ALIGN: usize = 512;
+        const SLACK: usize = 64 * 1024;
+        let mut offsets: Vec<usize> = Vec::with_capacity(inputs.len());
+        let mut total = 0usize;
+        for inp in inputs {
+            total = total.div_ceil(ALIGN) * ALIGN;
+            offsets.push(total);
+            total += inp.len();
+        }
+        total = total.div_ceil(ALIGN) * ALIGN;
+
+        let mut base: *mut u8 = std::ptr::null_mut();
+        if unsafe { ffi::aclrtMalloc(&mut base, total + SLACK, ffi::MALLOC_HUGE_FIRST) } != 0 {
+            bail!("aclrtMalloc({}) failed for contiguous {}", total + SLACK, spec.name);
+        }
+        for (inp, &off) in inputs.iter().zip(offsets.iter()) {
+            let dst = unsafe { base.add(off) };
+            let rc = unsafe { ffi::aclrtMemcpy(dst, inp.len(), inp.as_ptr(), inp.len(), ffi::MEMCPY_H2D) };
+            if rc != 0 {
+                unsafe { ffi::aclrtFree(base) };
+                bail!("H2D copy at offset {off} failed for {}", spec.name);
+            }
+        }
+        let out_bytes = out_len * std::mem::size_of::<f32>() + SLACK;
+        let mut d_out: *mut u8 = std::ptr::null_mut();
+        if unsafe { ffi::aclrtMalloc(&mut d_out, out_bytes, ffi::MALLOC_HUGE_FIRST) } != 0 {
+            unsafe { ffi::aclrtFree(base) };
+            bail!("aclrtMalloc({out_bytes}) failed for contiguous output of {}", spec.name);
+        }
+        let mut args: Vec<*mut u8> = offsets.iter().map(|&o| unsafe { base.add(o) }).collect();
+        args.push(d_out);
+        let stub = match self.stub(spec.name) {
+            Ok(s) => s,
+            Err(e) => {
+                unsafe { ffi::aclrtFree(base) };
+                unsafe { ffi::aclrtFree(d_out) };
+                return Err(e);
+            }
+        };
+        let rc = unsafe {
+            ffi::rtKernelLaunch(
+                stub,
+                // ONE BLOCK. The emitted kernel has no `GetBlockIdx` (verified: 0 occurrences in both
+                // the w8a8 and the q8mv artefacts), so it walks every row in a single AIV; launching it
+                // with `block_dim(USABLE_AIV)` starts N copies that contend for the same DMA. The
+                // harness's own `_do` launcher, which certifies this kernel, uses one.
+                1,
+                args.as_mut_ptr() as *mut u8,
+                (args.len() * std::mem::size_of::<*mut u8>()) as u32,
+                std::ptr::null_mut(),
+                self.stream,
+            )
+        };
+        if rc != 0 {
+            unsafe { ffi::aclrtFree(base) };
+            unsafe { ffi::aclrtFree(d_out) };
+            bail!("rtKernelLaunch({}) failed with {rc}", spec.name);
+        }
+        if unsafe { ffi::aclrtSynchronizeStream(self.stream) } != 0 {
+            unsafe { ffi::aclrtFree(base) };
+            unsafe { ffi::aclrtFree(d_out) };
+            bail!("stream sync failed after {}", spec.name);
+        }
+        let mut out = vec![0.0f32; out_len];
+        let bytes = out_len * std::mem::size_of::<f32>();
+        let rc = unsafe {
+            ffi::aclrtMemcpy(out.as_mut_ptr() as *mut u8, bytes, d_out, bytes, ffi::MEMCPY_D2H)
+        };
+        unsafe { ffi::aclrtFree(base) };
+        unsafe { ffi::aclrtFree(d_out) };
+        if rc != 0 {
+            bail!("D2H copy failed for {}", spec.name);
+        }
+        Ok(out)
+    }
+
     fn stub(&self, name: &str) -> Result<*const u8> {
         self.binary
             .stub(name)

@@ -62,15 +62,18 @@ fn main() -> anyhow::Result<()> {
             let w = &codes[lo * d_in..hi * d_in];
             let sc = &scale[lo..hi];
             let of = &offset[lo..hi];
-            let mut got = dev.run_by_symbol(
+            // CONTIGUOUS: all four inputs inside ONE device allocation, like the harness that
+            // certifies this kernel. Separate allocations hang at this shape; this is the test of
+            // whether that is the difference.
+            let mut got = dev.run_by_symbol_contiguous(
                 "w8a8_slice_1x1024_k4096",
                 "proj_w8a8_engine_1x1024_k4096_mix_aiv",
                 engine_ascend::device::Partitioning::ByRow,
                 &[
-                    (unsafe { std::slice::from_raw_parts(x.as_ptr() as *const u8, x.len() * 4) }, false),
-                    (unsafe { std::slice::from_raw_parts(w.as_ptr() as *const u8, w.len()) }, false),
-                    (unsafe { std::slice::from_raw_parts(sc.as_ptr() as *const u8, sc.len() * 4) }, false),
-                    (unsafe { std::slice::from_raw_parts(of.as_ptr() as *const u8, of.len() * 4) }, false),
+                    unsafe { std::slice::from_raw_parts(x.as_ptr() as *const u8, x.len() * 4) },
+                    unsafe { std::slice::from_raw_parts(w.as_ptr() as *const u8, w.len()) },
+                    unsafe { std::slice::from_raw_parts(sc.as_ptr() as *const u8, sc.len() * 4) },
+                    unsafe { std::slice::from_raw_parts(of.as_ptr() as *const u8, of.len() * 4) },
                 ],
                 band,
             )?;
