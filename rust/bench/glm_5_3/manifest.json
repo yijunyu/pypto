@@ -121,7 +121,8 @@
    "tile_rs_refused": "refused bench/glm_5_3/pto/proj_kv_a_mqa_glm53_1x512.pto: tile `%pto8` has a partial or dynamic v_row; the lift requires the full logical tile",
    "ascendc_sha256_16": "875670ac34e2b96c",
    "pto_sha256_16": "4100c5bc20c06145",
-   "device_check": "PASS 2026-11-06 on 910B2: elements=512 wrong=0 max_rel 1.805e-07 (oracle 15). A REAL projection; previously a 1x1 dot."
+   "device_check": "PASS 2026-11-06 on 910B2: elements=512 wrong=0 max_rel 1.805e-07 (oracle 15). A REAL projection; previously a 1x1 dot.",
+   "verify_args": "dav-2201 glm53_proj_kv_a_mqa_do 9000000 5 15 1e-5f 1e-6 1 512 4096"
   },
   "proj_output_glm53_1x4096": {
    "tile": "tile/proj_output_glm53_1x4096.tile",
@@ -131,7 +132,8 @@
    "tile_rs_refused": "refused bench/glm_5_3/pto/proj_output_glm53_1x4096.pto: tile `%pto8` has a partial or dynamic v_row; the lift requires the full logical tile",
    "ascendc_sha256_16": "2c39fcfd205bd7ca",
    "pto_sha256_16": "8e9814b3ae3109b8",
-   "device_check": "PASS 2026-11-06 on 910B2: elements=4096 wrong=0 max_rel 2.704e-07 (oracle 15). A REAL projection; previously a 1x1 dot."
+   "device_check": "PASS 2026-11-06 on 910B2: elements=4096 wrong=0 max_rel 2.704e-07 (oracle 15). A REAL projection; previously a 1x1 dot.",
+   "verify_args": "dav-2201 glm53_proj_output_do 9000000 5 15 1e-5f 1e-6 1 4096 4096"
   },
   "proj_q_a_glm53_1x1536": {
    "tile": "tile/proj_q_a_glm53_1x1536.tile",
@@ -141,7 +143,8 @@
    "tile_rs_refused": "refused bench/glm_5_3/pto/proj_q_a_glm53_1x1536.pto: tile `%pto8` has a partial or dynamic v_row; the lift requires the full logical tile",
    "ascendc_sha256_16": "0dcd6d7e1cd8aa12",
    "pto_sha256_16": "80d64281b4aa861d",
-   "device_check": "PASS 2026-11-06 on 910B2: elements=1536 wrong=0 max_rel 2.325e-07 (oracle 15). A REAL projection (1536 outputs from k=4096) through the w8a8 arm; the row previously certified a 1x1 dot."
+   "device_check": "PASS 2026-11-06 on 910B2: elements=1536 wrong=0 max_rel 2.325e-07 (oracle 15). A REAL projection (1536 outputs from k=4096) through the w8a8 arm; the row previously certified a 1x1 dot.",
+   "verify_args": "dav-2201 glm53_proj_q_a_do 9000000 5 15 1e-5f 1e-6 1 1536 4096"
   },
   "proj_q_b_glm53_1x16384": {
    "tile": "tile/proj_q_b_glm53_1x16384.tile",
@@ -158,7 +161,8 @@
    "tile_rs_refused": "refused bench/glm_5_3/pto/proj_shexp_down_glm53_1x4096.pto: tile `%pto8` has a partial or dynamic v_row; the lift requires the full logical tile",
    "ascendc_sha256_16": "b9e5d1125845ed71",
    "pto_sha256_16": "b93a36434fd44dfa",
-   "device_check": "PASS 2026-11-06 on 910B2: elements=4096 wrong=0 max_rel 2.704e-07 (oracle 15). A REAL projection; previously a 1x1 dot."
+   "device_check": "PASS 2026-11-06 on 910B2: elements=4096 wrong=0 max_rel 2.704e-07 (oracle 15). A REAL projection; previously a 1x1 dot.",
+   "verify_args": "dav-2201 glm53_proj_shexp_down_do 9000000 5 15 1e-5f 1e-6 1 4096 4096"
   },
   "residual_add_glm53_1x4096": {
    "tile": "tile/residual_add_glm53_1x4096.tile",
@@ -251,7 +255,8 @@
    "tile": "tile/kda_q_glm53_1x8192_k4096.tile",
    "pto": null,
    "ascendc": "ascendc/kda_q_glm53_1x8192_k4096.cpp",
-   "device_check": "PASS 2026-11-06 on 910B2: elements=8192 wrong=0 max_abs 6.250e+01 max_rel 2.514e-07 (oracle 15). GLM 5.3s kda_q projection: 8192 outputs (64 heads x 128 head_dim) from k=4096 -- the widest kernel in this campaign and the first above 4096 rows. It needed the plane DMA to be BANDED (2048 rows at a time): whole-plane buffers at this width overflow the unified buffer."
+   "device_check": "PASS 2026-11-06 on 910B2: elements=8192 wrong=0 max_abs 6.250e+01 max_rel 2.514e-07 (oracle 15). GLM 5.3s kda_q projection: 8192 outputs (64 heads x 128 head_dim) from k=4096 -- the widest kernel in this campaign and the first above 4096 rows. It needed the plane DMA to be BANDED (2048 rows at a time): whole-plane buffers at this width overflow the unified buffer.",
+   "verify_args": "dav-2201 glm53_kda_q_do 12000000 5 15 1e-5f 1e-6 1 8192 4096"
   }
  },
  "tile_rs_removed_2026_11_02": {
@@ -339,6 +344,7 @@
   "why_collapses_are_listed_not_multiplied": "'under-counts by 3.5x' is one number and tells a reader nothing they can act on. These name the specific rows that each stand for several real kernels. They are not multiplied out: that would turn a list of known omissions into a fabricated total. Someone who knows the true count for this model can see which rows to expand.",
   "published_registry": "the published kernel registry, read 2026-11-02, holds 6 distinct kernels for this model, all of them model-prefixed and all under a `source-scan` basis. That is FEWER than this manifest's derived lower bound, and the registry was generated 2026-08-31, before this architecture's work landed. The derived bound therefore stands: adopting a smaller external figure would lower a bound on the strength of its provenance alone. The 6 is recorded as a floor on model-specific kernels alone.",
   "published_registry_count": 6,
-  "note": "27 since 2026-11-06: the seven KDA projections (kda_q/k/v 8192 out from k=4096, f_a/g_a 128 out, f_b/g_b 8192 out from k=128) are real tensors in the model's own file and were missing from the estimate. They could not be emitted before iteration 151 because the w8a8 arm faulted above ~1280 outputs at k=4096 -- the estimate was low because the TOOL was limited, not because the model was smaller."
+  "note": "27 since 2026-11-06: the seven KDA projections (kda_q/k/v 8192 out from k=4096, f_a/g_a 128 out, f_b/g_b 8192 out from k=128) are real tensors in the model's own file and were missing from the estimate. They could not be emitted before iteration 151 because the w8a8 arm faulted above ~1280 outputs at k=4096 -- the estimate was low because the TOOL was limited, not because the model was smaller.",
+  "verify_args_convention": "From 2026-11-06 every certified kernel records `verify_args`: the args column of its verify_all.sh row. `sync_verify_all.py` derives missing rows from it, because four rounds committed with a red gate from adding that row by hand."
  }
 }
