@@ -298,7 +298,7 @@ pub struct BlockParams {
 ///
 /// `q_proj`, `k_proj`, `v_proj` and `gate_proj` are the post-projection, pre-head vectors of length
 /// `heads * head_dim`, one row per token. Returns the same shape.
-pub fn block(params: &BlockParams, q_proj: &[f64], k_proj: &[f64], v_proj: &[f64], gate_proj: &[f64], tokens: usize, o_norm_w: &[f64]) -> Vec<f64> {
+pub fn block(params: &BlockParams, q_proj: &[f64], k_proj: &[f64], v_proj: &[f64], gate_proj: &[f64], tokens: usize, o_norm_w: &[f64], out_gate: &[f64]) -> Vec<f64> {
     let d = params.head_dim;
     assert_eq!(q_proj.len(), tokens * params.heads * d);
     let mut out = vec![0.0f64; tokens * params.heads * d];
@@ -332,7 +332,8 @@ pub fn block(params: &BlockParams, q_proj: &[f64], k_proj: &[f64], v_proj: &[f64
             let k = sl(&kc);
             let v = sl(&vc);
             let dt: Vec<f64> = (0..d).map(|c| gate_proj[t * params.heads * d + h * d + c] + params.dt_bias[h * d + c]).collect();
-            let gamma: Vec<f64> = (0..d).map(|_| 1.0).collect(); // the output gate is applied by gated_rms_norm
+            // THE OUTPUT GATE, per channel, from `kda_g_a`/`kda_g_b` -- the same values `gated_rms_norm` applies.
+            let gamma: Vec<f64> = (0..d).map(|c| out_gate[t * params.heads * d + h * d + c]).collect();
             let o = step(&mut states[h], &q, &k, &v, params.a_log[h], &dt, params.beta[h], &gamma);
             let normed = gated_rms_norm(&o, &o_norm_w[..d], &gamma, params.eps);
             out[t * params.heads * d + h * d..t * params.heads * d + (h + 1) * d].copy_from_slice(&normed);

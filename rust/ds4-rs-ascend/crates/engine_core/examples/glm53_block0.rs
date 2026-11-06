@@ -252,7 +252,17 @@ fn main() -> anyhow::Result<()> {
         let gate: Vec<f64> = (0..heads * head_dim)
             .map(|r| (0..128).map(|c| fb[r * 128 + c] as f64 * hid[c]).sum())
             .collect();
-        let o = block(&params, &q, &k, &v, &gate, 1, &onw);
+        // THE OUTPUT GATE, per channel: g_b(g_a(normed x)), through a sigmoid.
+        let ga = g.dequant_name(&format!("blk.{b}.kda_g_a.weight"))?;
+        let gb = g.dequant_name(&format!("blk.{b}.kda_g_b.weight"))?;
+        let ghid: Vec<f64> = (0..128).map(|r| (0..d).map(|c| ga[r * d + c] as f64 * xin[c]).sum()).collect();
+        let ogate: Vec<f64> = (0..heads * head_dim)
+            .map(|r| {
+                let z: f64 = (0..128).map(|c| gb[r * 128 + c] as f64 * ghid[c]).sum();
+                1.0 / (1.0 + (-z).exp())
+            })
+            .collect();
+        let o = block(&params, &q, &k, &v, &gate, 1, &onw, &ogate);
         anyhow::ensure!(o.iter().all(|v| v.is_finite()), "block {b} produced a non-finite value");
         // output projection (8192 -> d) then the residual
         let wo = g.dequant_name(&format!("blk.{b}.kda_output.weight"))?;

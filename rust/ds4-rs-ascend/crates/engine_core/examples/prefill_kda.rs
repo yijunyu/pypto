@@ -136,7 +136,8 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                     dt_bias: vec![0.0; c.heads * c.head_dim], beta: vec![0.5; c.heads], eps: c.eps,
                 };
                 let onw = vec![1.0f64; c.head_dim];
-                let out = block(&params, &flat(&q), &flat(&k), &flat(&v), &flat(&gate), n, &onw);
+                let ogate = vec![1.0f64; n * c.heads * c.head_dim];
+                let out = block(&params, &flat(&q), &flat(&k), &flat(&v), &flat(&gate), n, &onw, &ogate);
                 let wo = g.dequant_name(&format!("blk.{b}.kda_output.weight"))?;
                 for t in 0..n {
                     let o = &out[t * c.heads * c.head_dim..(t + 1) * c.heads * c.head_dim];
