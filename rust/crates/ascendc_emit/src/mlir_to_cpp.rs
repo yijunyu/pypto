@@ -6001,6 +6001,9 @@ fn generate_vector_compute_code(
                         writeln!(
                             code,
                             r#"{{ // tile_col_expand: one ROW copied down CE_ROWS rows
+  // The source arrives by DMA and these are SCALAR reads: the emitter orders vector ops
+  // against pending copies, not a hand-written loop, so the barrier is explicit here.
+  AscendC::PipeBarrier<PIPE_ALL>();
   int __ce_rows = ({rows}); int __ce_cols = ({cols});
   for (int __r = 0; __r < __ce_rows; ++__r)
     for (int __c = 0; __c < __ce_cols; ++__c)
