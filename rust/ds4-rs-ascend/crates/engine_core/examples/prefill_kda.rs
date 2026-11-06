@@ -123,7 +123,13 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                             .map(|r| (0..c.d).map(|cc| w[r * c.d + cc] as f64 * xin[cc]).sum())
                             .collect::<Vec<f64>>());
                     }
-                    gate.push(vec![0.0f64; c.heads * c.head_dim]);
+                    // THE REAL f-GATE per position: dt = f_b(f_a(normed x)) + dt_bias
+                    let fa = g.dequant_name(&format!("blk.{b}.kda_f_a.weight"))?;
+                    let fb = g.dequant_name(&format!("blk.{b}.kda_f_b.weight"))?;
+                    let hid: Vec<f64> = (0..128).map(|r| (0..c.d).map(|cc| fa[r * c.d + cc] as f64 * xin[cc]).sum()).collect();
+                    gate.push((0..c.heads * c.head_dim)
+                        .map(|r| (0..128).map(|cc| fb[r * 128 + cc] as f64 * hid[cc]).sum())
+                        .collect::<Vec<f64>>());
                 }
                 let flat = |rows: &Vec<Vec<f64>>| -> Vec<f64> { rows.iter().flatten().copied().collect() };
                 let params = BlockParams {
@@ -143,10 +149,35 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                         let raw = g.dequant_name(&format!("blk.{b}.kda_dt_bias.weight"))?;
                         raw.iter().map(|v| *v as f64).collect()
                     },
-                    beta: vec![0.5; c.heads], eps: c.eps,
+                    // THE REAL beta, as a per-head projection of the FIRST position's input (the decode path's
+                    // reading), and the real output gate for the block.
+                    beta: {
+                        let raw = g.dequant_name(&format!("blk.{b}.kda_beta.weight"))?;
+                        (0..c.heads)
+                            .map(|h| {
+                                let z: f64 = (0..c.d).map(|cc| raw[cc * c.heads + h] as f64 * x[0][cc]).sum();
+                                1.0 / (1.0 + (-z).exp())
+                            })
+                            .collect()
+                    },
+                    eps: c.eps,
                 };
                 let onw = vec![1.0f64; c.head_dim];
-                let ogate = vec![1.0f64; n * c.heads * c.head_dim];
+                let ogate = {
+                    // THE REAL output gate per position
+                    let ga = g.dequant_name(&format!("blk.{b}.kda_g_a.weight"))?;
+                    let gb = g.dequant_name(&format!("blk.{b}.kda_g_b.weight"))?;
+                    let mut v = Vec::with_capacity(n * c.heads * c.head_dim);
+                    for t in 0..n {
+                        let xin = gated_rms_norm(&x[t], &nw, &vec![1.0; c.d], c.eps);
+                        let hid: Vec<f64> = (0..128).map(|r| (0..c.d).map(|cc| ga[r * c.d + cc] as f64 * xin[cc]).sum()).collect();
+                        for r in 0..c.heads * c.head_dim {
+                            let z: f64 = (0..128).map(|cc| gb[r * 128 + cc] as f64 * hid[cc]).sum();
+                            v.push(1.0 / (1.0 + (-z).exp()));
+                        }
+                    }
+                    v
+                };
                 let out = block(&params, &flat(&q), &flat(&k), &flat(&v), &flat(&gate), n, &onw, &ogate);
                 let wo = g.dequant_name(&format!("blk.{b}.kda_output.weight"))?;
                 for t in 0..n {
