@@ -281,7 +281,8 @@ def kernels(s):
     ]:
         b = (
             c("r", T) + c("kk", k) + c("nn", n) + c("z", 0)
-            + f"""    %res = llvm.call @__tile_matvec_w8a8_gm_f32(%arg0, %arg1, %arg2, %arg3, %z, %nn, %kk) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32) -> i32
+            + f"""    %x = llvm.call @__tile_load_f32(%arg0, %r, %kk) : (!llvm.ptr<1>, i32, i32) -> i32
+    %res = llvm.call @__tile_matvec_w8a8_f32(%arg1, %arg2, %arg3, %x, %z, %nn, %kk) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32) -> i32
     llvm.call @__tile_store_f32(%arg4, %res, %r, %nn) : (!llvm.ptr<1>, i32, i32, i32) -> ()
 """
         )
