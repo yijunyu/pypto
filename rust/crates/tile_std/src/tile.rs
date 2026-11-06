@@ -223,6 +223,12 @@ extern "C" {
     /// Returns a (ROWS × 1) tile where each row is the max of that row.
     pub fn __tile_reduce_max_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
+    /// Store ROWS x COLS to `gm` starting at element OFFSET.
+    ///
+    /// The counterpart of `__tile_load_at_f32`, and needed for the same reason: a per-head loop writes
+    /// head h's 512 floats at `h * 512`, and `__tile_store_f32` always targets element 0.
+    pub fn __tile_store_at_f32(gm: *mut f32, t: u32, offset: u32, rows: u32, cols: u32) -> u32;
+
     /// Load ROWS x COLS from `gm` starting at element OFFSET.
     ///
     /// `__tile_load_f32` takes the GM ARG itself, so only element 0 of a tensor is reachable. The

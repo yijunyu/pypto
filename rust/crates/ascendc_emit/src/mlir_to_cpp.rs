@@ -254,6 +254,7 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_slice_store_f32",
     "__tile_load_at_f32",
     "__tile_fill_f32",
+    "__tile_store_at_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1572,6 +1573,9 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         }
         if line.contains("@__tile_fill_f32") {
             vec_buf_count += 1;
+        }
+        if line.contains("@__tile_store_at_f32") {
+            // a store reuses the tile it writes; no new buffer
         }
         if line.contains("@__tile_row_axpy_f32") {
             // one cols-wide temp: `Muls` into it, then `Add` into the accumulator
@@ -6033,6 +6037,35 @@ fn generate_vector_compute_code(
             // this emitter uses (`Duplicate` fills from a scalar the compiler
             // knows), so it is a scalar loop -- the same shape the rope identity
             // uses, and honest about being a loop rather than a vector op.
+            // --- __tile_store_at_f32: store ROWS x COLS at an ELEMENT OFFSET ---
+            if line.contains("@__tile_store_at_f32") {
+                if let Some(result) = extract_result(line) {
+                    let args = extract_call_args(line);
+                    if args.len() >= 5 {
+                        let (gm_idx, _) = resolve_gm_with_offset(
+                            &args[0], &gm_arg_indices, &gm_offsets, &values,
+                        );
+                        let src = resolve_buf_index(&args[1], &ssa_to_buf, &values);
+                        let off_expr = resolve_value(&args[2], &values);
+                        let rows_expr = resolve_value(&args[3], &values);
+                        let cols_expr = resolve_value(&args[4], &values);
+                        writeln!(
+                            code,
+                            "AscendC::PipeBarrier<PIPE_ALL>();\n  \
+                             AscendC::DataCopy(gm{}Tensor[{}], buf{}, ({}) * ({}));",
+                            gm_idx, off_expr, src, rows_expr, cols_expr
+                        )
+                        .unwrap();
+                        ssa_to_buf.insert(result.clone(), src);
+                        values.insert(
+                            result,
+                            CppValue { expr: format!("{src}"), cpp_type: "uint32_t".to_string() },
+                        );
+                    }
+                }
+                continue;
+            }
+
             // --- __tile_fill_f32: fill a tile with a COMPILE-TIME scalar ---
             //
             // Declared in `tile_std` since the beginning but never given an arm, so it was silently
@@ -6042,7 +6075,9 @@ fn generate_vector_compute_code(
                 if let Some(result) = extract_result(line) {
                     let args = extract_call_args(line);
                     if args.len() >= 4 {
-                        let scalar = args[1].trim().to_string();
+                        // RESOLVE the scalar operand: a `%f1` constant must become its literal (or
+                        // its C++ variable), not be pasted in as `(%f1)`, which does not compile.
+                        let scalar = resolve_value(&args[1], &values);
                         let rows_expr = resolve_value(&args[2], &values);
                         let cols_expr = resolve_value(&args[3], &values);
                         let buf_idx = buf_counter;
