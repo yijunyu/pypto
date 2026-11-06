@@ -139,7 +139,31 @@ fn main() -> anyhow::Result<()> {
     anyhow::ensure!(heads * head_dim == 8192, "64 heads x 128 must be 8192");
 
     // A deterministic input; the VALUES do not matter, the SHAPES and the finiteness do.
-    let mut x: Vec<f64> = (0..d).map(|i| ((i % 11) as f64 - 5.0) * 0.01).collect();
+    // THE INPUT: a REAL PROMPT, tokenised by the repository's own tokeniser, embedded through `token_embd`.
+    // Before this, every run used a synthetic vector and the token it produced answered nothing. GLM53_PROMPT
+    // selects the text; unset falls back to the synthetic vector so the earlier measurements stay reproducible.
+    let mut x: Vec<f64> = match std::env::var("GLM53_PROMPT") {
+        Ok(prompt) => {
+            use engine_core::tokenizer::Vocab;
+            let v = Vocab::from_gguf(&GgufFile::open(&path)?)?;
+            let ids = v.encode(&prompt);
+            println!("prompt {prompt:?} -> {ids:?}");
+            anyhow::ensure!(!ids.is_empty(), "the prompt tokenised to nothing");
+            // A single-token prompt keeps the block loop's arithmetic identical to every earlier run; a longer one
+            // would need a prefill loop the block assembly does not have yet, so it is refused by name.
+            anyhow::ensure!(
+                ids.len() == 1,
+                "the prompt is {} tokens; this decode path takes ONE (a prefill loop is not implemented)",
+                ids.len()
+            );
+            let emb = g.dequant_name("token_embd.weight")?;
+            let vocab_cols = emb.len() / d;
+            let id = ids[0] as usize;
+            anyhow::ensure!(id < vocab_cols, "token {id} is outside the {vocab_cols}-wide embedding");
+            (0..d).map(|c| emb[c * vocab_cols + id] as f64).collect()
+        }
+        Err(_) => (0..d).map(|i| ((i % 11) as f64 - 5.0) * 0.01).collect(),
+    };
     // 8192-wide projections from the real weight matrix (f64, one row at a time).
     let proj = |w: &[f32]| -> Vec<f64> {
         (0..8192)
