@@ -13,5 +13,9 @@ fn main() -> anyhow::Result<()> {
             println!("{k} = {}", &s[..s.len().min(90)]);
         }
     }
+    println!("--- first 24 tensor names ---");
+    for t in g.tensors.iter().take(24) {
+        println!("{} {:?} {:?}", t.name, t.dims, t.ttype);
+    }
     Ok(())
 }
