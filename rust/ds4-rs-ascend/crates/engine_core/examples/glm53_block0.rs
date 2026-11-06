@@ -339,7 +339,7 @@ fn main() -> anyhow::Result<()> {
             // ([4,1,8192]) and beta is [4096,64], neither of which `BlockParams` can hold.
             heads, head_dim,
             a_log: {
-                let raw = g.dequant_name(&format!("blk.{b}.kda_a_log.weight"))?;
+                let raw = dequant_either(&g, b, "a")?;
                 anyhow::ensure!(raw.len() == heads, "kda_a_log is {} not {heads}", raw.len());
                 raw.iter().map(|v| *v as f64).collect()
             },
@@ -350,7 +350,7 @@ fn main() -> anyhow::Result<()> {
             conv_v: load_conv(&g, b, "kda_v_conv", heads * head_dim)?,
             // THE REAL dt BIAS: kda_dt_bias is [8192], one value per channel.
             dt_bias: {
-                let raw = g.dequant_name(&format!("blk.{b}.kda_dt_bias.weight"))?;
+                let raw = dequant_either(&g, b, "bias")?;
                 anyhow::ensure!(raw.len() == heads * head_dim, "kda_dt_bias is {} not {}", raw.len(), heads * head_dim);
                 raw.iter().map(|v| *v as f64).collect()
             },
@@ -359,7 +359,7 @@ fn main() -> anyhow::Result<()> {
             // the alternative reading is per (channel, head) values used directly, which the recurrence's
             // per-head `beta` cannot consume. If the reading is wrong every block is wrong in the same way.
             beta: {
-                let raw = g.dequant_name(&format!("blk.{b}.kda_beta.weight"))?;
+                let raw = dequant_either(&g, b, "beta")?;
                 anyhow::ensure!(raw.len() == d * heads, "kda_beta is {} not {d} x {heads}", raw.len());
                 (0..heads)
                     .map(|h| {
@@ -371,24 +371,42 @@ fn main() -> anyhow::Result<()> {
             eps: cfg.rms_norm_eps as f64,
         };
         // THE TIME STEP, from the block's own f-gate: dt = f_b(f_a(normed x)) + dt_bias, 8192 channels.
-        let fa = g.dequant_name(&format!("blk.{b}.kda_f_a.weight"))?;
-        let fb = g.dequant_name(&format!("blk.{b}.kda_f_b.weight"))?;
+        let fa = dequant_either(&g, b, "f_a")?;
+        let fb = dequant_either(&g, b, "f_b")?;
         let hid: Vec<f64> = (0..128)
             .map(|r| (0..d).map(|c| fa[r * d + c] as f64 * xin[c]).sum())
             .collect();
         let gate: Vec<f64> = (0..heads * head_dim)
             .map(|r| (0..128).map(|c| fb[r * 128 + c] as f64 * hid[c]).sum())
             .collect();
-        // THE OUTPUT GATE, per channel: g_b(g_a(normed x)), through a sigmoid.
-        let ga = g.dequant_name(&format!("blk.{b}.kda_g_a.weight"))?;
-        let gb = g.dequant_name(&format!("blk.{b}.kda_g_b.weight"))?;
-        let ghid: Vec<f64> = (0..128).map(|r| (0..d).map(|c| ga[r * d + c] as f64 * xin[c]).sum()).collect();
-        let ogate: Vec<f64> = (0..heads * head_dim)
-            .map(|r| {
-                let z: f64 = (0..128).map(|c| gb[r * 128 + c] as f64 * ghid[c]).sum();
-                1.0 / (1.0 + (-z).exp())
-            })
-            .collect();
+        // THE OUTPUT GATE COMES IN TWO SHAPES, and the shapes say which.
+        //   GLM 5.3: a LOW-RANK pair -- kda_g_a [d,128] then kda_g_b [128, heads*head_dim]
+        //   Kimi K3: ONE DIRECT matrix -- ssm_g [d, heads*head_dim]   (its f-gate is still low-rank)
+        // Reading only the pair failed on Kimi with "tensor not found: blk.0.ssm_dt.g_a"; a direct matrix is tried FIRST
+        // and the pair is the fallback, because `ssm_g` and `kda_g_a` cannot both exist for one block.
+        let ogate: Vec<f64> = if let Ok(wg) = dequant_either(&g, b, "g") {
+            if wg.len() == (heads * head_dim) * d {
+                (0..heads * head_dim)
+                    .map(|r| {
+                        let z: f64 = (0..d).map(|c| wg[r * d + c] as f64 * xin[c]).sum();
+                        1.0 / (1.0 + (-z).exp())
+                    })
+                    .collect()
+            } else {
+                anyhow::bail!("gate matrix is {} not {}", wg.len(), (heads * head_dim) * d)
+            }
+        } else {
+            // the low-rank pair
+            let ga = dequant_either(&g, b, "g_a")?;
+            let gb = dequant_either(&g, b, "g_b")?;
+            let ghid: Vec<f64> = (0..128).map(|r| (0..d).map(|c| ga[r * d + c] as f64 * xin[c]).sum()).collect();
+            (0..heads * head_dim)
+                .map(|r| {
+                    let z: f64 = (0..128).map(|c| gb[r * 128 + c] as f64 * ghid[c]).sum();
+                    1.0 / (1.0 + (-z).exp())
+                })
+                .collect()
+        };
         if b >= 0 && std::env::var_os("KDA_INTER").is_some() {
             println!("KDA-INTER blk{b} decode: x0={:?} xin0={:?} q0={:?} beta0={:?}",
                 x[0], xin[0], q[0], params.beta[0]);
