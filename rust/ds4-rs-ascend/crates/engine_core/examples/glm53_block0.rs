@@ -23,39 +23,25 @@ use std::path::PathBuf;
 /// `v`, so the block reduces to its four certified projections plus the norms -- which is why a decode-shaped
 /// MLA block is tractable while a prefill one is not.
 fn mla_block_1token(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) -> anyhow::Result<Vec<f64>> {
-    let mv = |w: &[f32], xv: &[f64], k: usize, n: usize| -> Vec<f64> {
-        (0..n).map(|r| (0..k).map(|c| w[r * k + c] as f64 * xv[c]).sum()).collect()
-    };
-    let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
-    let xin = engine_core::kda_block::gated_rms_norm(x, &norm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], eps);
-    // EVERY WIDTH IS DERIVED FROM ITS TENSOR. This helper had five GLM-shaped constants (1536, 16384, 512, 256, heads=64)
-    // and Kimi's MLA has 96 heads of a different width, so the 8-block run indexed past its buffer at block 3. The KDA path
-    // was fixed one constant at a time; the MLA path is the same lesson in the other attention kind.
-    let wqa = dequant_either(&g, b, "q_a")?;
-    let q_lora = wqa.len() / d;
-    let qa = mv(&wqa, &xin, d, q_lora);
-    let wqb = dequant_either(&g, b, "q_b")?;
-    let q_out = wqb.len() / q_lora;
-    let _q = mv(&wqb, &qa, q_lora, q_out);
-    // kv_a: d -> lat; v_b: [lat, per_head, heads] flattened, so v_out = len / lat and heads = v_out / per_head.
-    let wkva = dequant_either(&g, b, "kv_a_mqa")?;
-    let lat = wkva.len() / d;
-    let kva = mv(&wkva, &xin, d, lat);
-    // TWO LATENTS, ONE LAYOUT. `attn_kv_a_mqa` emits 576 values on Kimi and 512 on GLM; the 576 is 512 latent plus
-    // 64 rope, and `attn_kv_a_norm` (512 in both) is the width the v/k projections actually consume. Using kv_a's width
-    // as v_b's gave "v_b gives 10922 outputs" -- an average, not a width.
-    //
-    // With the layout [heads][per_head][lat] contiguous (both models: GLM v_b [512,256,64], Kimi v_b [512,128,96]),
-    // the per-head loop is exactly ONE matmul, so no per-head constant is needed at all.
-    let lat_v = dequant_either(&g, b, "kv_a_norm")?.len();
-    anyhow::ensure!(lat_v <= lat, "kv_a emits {lat} but the norm is {lat_v}"); // kv_a may emit MORE (rope tail)
-    let wvb = dequant_either(&g, b, "v_b")?;
-    anyhow::ensure!(wvb.len() % lat_v == 0, "v_b is {} not a multiple of the latent {lat_v}", wvb.len());
-    let v_out = wvb.len() / lat_v;
-    let vcat = mv(&wvb, &kva[..lat_v], lat_v, v_out);
-    // output: 16384 -> d
-    let wo = g.dequant_name(&format!("blk.{b}.attn_output.weight"))?;
-    Ok(mv(&wo, &vcat, v_out, d))
+    // THE TESTED CODE IS THE CODE THAT RUNS. The arithmetic moved to `engine_core::mla_block`, whose three regression tests
+    // pin the flat matmul to the per-head loop it replaced, the two-latent rule, and whole-block sanity. This function now
+    // only fetches tensors and hands them over -- if the numbers move, the library changed, not the glue.
+    let norm_w = dequant_either(&g, b, "norm")?;
+    let xin = engine_core::kda_block::gated_rms_norm(
+        x,
+        &norm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(),
+        &vec![1.0f64; d],
+        eps,
+    );
+    let q_a = dequant_either(&g, b, "q_a")?;
+    let q_b = dequant_either(&g, b, "q_b")?;
+    let kv_a = dequant_either(&g, b, "kv_a_mqa")?;
+    let kv_a_norm = dequant_either(&g, b, "kv_a_norm")?.len();
+    let v_b = dequant_either(&g, b, "v_b")?;
+    let out = dequant_either(&g, b, "output")?;
+    Ok(engine_core::mla_block::mla_1token(
+        &q_a, &q_b, &kv_a, kv_a_norm, &v_b, &out, &xin, d,
+    ))
 }
 
 /// How many blocks to run: all of them unless GLM53_BLOCKS says otherwise.

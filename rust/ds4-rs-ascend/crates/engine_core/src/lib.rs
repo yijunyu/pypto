@@ -32,8 +32,8 @@ pub mod moe_route;
 pub mod glm53_ffn;
 pub mod glm53_plan;
 
-#[path = "moe.rs"]
 pub mod mla_block;
+#[path = "moe.rs"]
 pub mod moe;
 
 #[path = "dispatch.rs"]
