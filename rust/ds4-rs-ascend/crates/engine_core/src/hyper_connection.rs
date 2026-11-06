@@ -22,30 +22,55 @@ fn safe_div(v: &[f64], d: &[f64], eps: f64) -> Vec<f64> {
 /// own `hyper_connection.epsilon` and is added to every denominator, which is what makes that safe.
 pub fn sinkhorn(m: &[f64], n: usize, iters: usize, eps: f64) -> Vec<f64> {
     assert_eq!(m.len(), n * n, "matrix is not {n} x {n}");
+    if n == 0 {
+        return Vec::new();
+    }
     let mut x = m.to_vec();
-    for _ in 0..iters {
-        for r in 0..n {
-            let s: f64 = x[r * n..(r + 1) * n].iter().sum();
-            for c in 0..n {
-                x[r * n + c] /= s + eps;
-            }
+    // THE FIRST PASS IS A SOFTMAX, NOT A SUM-NORMALISATION. `engine_ascend/src/hc.rs` documents this and it is the
+    // difference between a distribution and a rescaled matrix: pass 1 subtracts the row max, exponentiates, then
+    // normalises and adds eps; passes 2..N normalise by the row SUM. My first version did N identical sum passes,
+    // which produces a plausible matrix that is not this operator.
+    for r in 0..n {
+        let row = &mut x[r * n..(r + 1) * n];
+        let mx = row.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let mut sum = 0.0;
+        for v in row.iter_mut() {
+            *v = (*v - mx).exp();
+            sum += *v;
         }
-        for c in 0..n {
-            let s: f64 = (0..n).map(|r| x[r * n + c]).sum();
-            for r in 0..n {
-                x[r * n + c] /= s + eps;
-            }
+        let inv = 1.0 / sum;
+        for v in row.iter_mut() {
+            *v = *v * inv + eps;
         }
     }
-    // A FINAL ROW PASS. Alternating normalisation leaves whichever side ran LAST summing to 1; the loop ends on a
-    // COLUMN pass, so without this the rows are only approximately normalised and the test (rightly) fails.
-    for r in 0..n {
-        let s: f64 = x[r * n..(r + 1) * n].iter().sum();
-        for c in 0..n {
-            x[r * n + c] /= s + eps;
+    col_scale(&mut x, n, eps);
+    for _ in 1..iters.max(1) {
+        for r in 0..n {
+            let row = &mut x[r * n..(r + 1) * n];
+            let s: f64 = row.iter().sum();
+            let inv = 1.0 / (s + eps);
+            for v in row.iter_mut() {
+                *v *= inv;
+            }
         }
+        col_scale(&mut x, n, eps);
     }
     x
+}
+
+fn col_scale(x: &mut [f64], n: usize, eps: f64) {
+    let mut col = vec![0.0f64; n];
+    for r in 0..n {
+        for c in 0..n {
+            col[c] += x[r * n + c];
+        }
+    }
+    for c in 0..n {
+        let inv = 1.0 / (col[c] + eps);
+        for r in 0..n {
+            x[r * n + c] *= inv;
+        }
+    }
 }
 
 /// The 24 predicted parameters, split into the matrix and the two weight vectors.
@@ -85,11 +110,13 @@ impl Params {
                     + hc_base[r] as f64
             })
             .collect();
-        let matrix = sinkhorn(&alpha[..n * n], n, iters, eps);
+        // THE LAYOUT IS `4 + 4 + 4*4`, MATRIX LAST: four in-weights, four out-weights, then the sixteen matrix
+        // entries. `engine_ascend/src/hc.rs` states it; my first version assumed `16 + 4 + 4`, the reverse.
+        let matrix = sinkhorn(&alpha[2 * n..], n, iters, eps);
         Params {
             matrix,
-            w_in: alpha[n * n..n * n + n].to_vec(),
-            w_out: alpha[n * n + n..].to_vec(),
+            w_in: alpha[..n].to_vec(),
+            w_out: alpha[n..2 * n].to_vec(),
         }
     }
 
@@ -149,6 +176,12 @@ mod tests {
             assert!((col - 1.0).abs() < 0.2, "col {c} sums to {col}");
         }
     }
+
+    // I wrote a test here asserting that one Sinkhorn pass leaves the first row dominated by its largest logit, and
+    // that twenty passes relax it. BOTH were false: each pass is followed by a COLUMN scale, which reweights the rows
+    // between passes, so a row's internal ratios are not preserved and the largest entry can grow. Removed rather than
+    // retuned -- **an assertion whose direction I cannot predict is not a test, it is a coin.** The asymmetry is still
+    // documented in the function and in `engine_ascend/src/hc.rs`; what is not there is a numerical assertion about it.
 
     /// A ZERO matrix stays finite: eps in every denominator is what makes the degenerate case safe rather than NaN.
     #[test]
