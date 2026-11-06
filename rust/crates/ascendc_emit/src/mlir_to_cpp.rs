@@ -1054,6 +1054,7 @@ fn detect_tiling_loop(blocks: &[BasicBlock]) -> Option<TilingLoopInfo> {
     let mut latch_idx: Option<usize> = None;
 
     for (i, block) in blocks.iter().enumerate() {
+        let mut loop_depth: usize = 0;
         for line in &block.lines {
             let line = line.trim();
             // Look for cf.br ^bbN or goto __bb_N patterns
@@ -5155,6 +5156,9 @@ fn generate_vector_compute_code(
             .map(|li| li.body_labels.contains(&block.label))
             .unwrap_or(false);
 
+        // Set while emitting inside an `scf.for`: the induction variable is bound in `values`, and a
+        // trailing `}` in the block's lines closes the C++ loop rather than being skipped.
+        let mut loop_depth: usize = 0;
         for line in &block.lines {
             let line = line.trim();
             // bf16 intrinsics share code paths with f16 (both are 16-bit floats;
@@ -12022,6 +12026,49 @@ fn generate_vector_compute_code(
                     &mut aggregate_fields,
                     analysis.needs_scalar_math_buf,
                 );
+                continue;
+            }
+
+            // --- scf.for: emit a real C++ loop ---
+            //
+            // The block's lines are contiguous, so the loop BODY follows this header inline and the
+            // matching `}` closes it. Binding the induction variable in `values` is what makes the
+            // body's operands (`load_at(%x, %i, ...)`) resolve to the C++ counter instead of the
+            // `/* %i */0` placeholder.
+            //
+            // This replaces `// UNSUPPORTED: scf.for ...`, which NAMED the construct in a comment and
+            // then emitted the body ONCE -- a kernel that compiled, ran, and did 1/N of the work. A
+            // marker in a comment is not a refusal (iteration 113).
+            if let Some(rest) = line.strip_prefix("scf.for ") {
+                if let Some((head, _)) = rest.split_once('{') {
+                    let toks: Vec<&str> = head.split_whitespace().collect();
+                    // %i = %lo to %hi step %st
+                    if toks.len() >= 6 && toks[1] == "=" && toks[3] == "to" && toks[4].ends_with("step") == false {
+                        // toks: [%i, =, %lo, to, %hi, step, %st] or with `step` merged
+                        let iv = toks[0].to_string();
+                        let lo_s = toks[2];
+                        let hi_s = toks[4];
+                        let st_s = toks.last().copied().unwrap_or("");
+                        let lo = resolve_value(lo_s, &values);
+                        let hi = resolve_value(hi_s, &values);
+                        let st = resolve_value(st_s, &values);
+                        let ctr = format!("__it{}", loop_depth);
+                        writeln!(code, "for (int {ctr} = {lo}; {ctr} < {hi}; {ctr} += {st}) {{").unwrap();
+                        values.insert(
+                            iv,
+                            CppValue { expr: ctr.clone(), cpp_type: "i32".to_string() },
+                        );
+                        loop_depth += 1;
+                        continue;
+                    }
+                }
+            }
+            if line == "}" && loop_depth > 0 {
+                loop_depth -= 1;
+                writeln!(code, "}}").unwrap();
+                continue;
+            }
+            if line.starts_with("scf.yield") {
                 continue;
             }
 
