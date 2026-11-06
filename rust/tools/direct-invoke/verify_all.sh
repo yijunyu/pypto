@@ -88,6 +88,11 @@ glm_5_3/ascendc/proj_dense_down_glm53_1x4096         dav-2201 glm53_proj_dense_d
 kimi_k3/ascendc/proj_q_a_k3_1x1536                   dav-2201 k3_proj_q_a_do               1536 3   2 1e-5f    1e-5
 kimi_k3/ascendc/proj_kv_a_mqa_k3_1x512               dav-2201 k3_proj_kv_a_mqa_do           512 3   2 1e-5f    1e-5
 kimi_k3/ascendc/proj_output_k3_1x7168                dav-2201 k3_proj_output_do            7168 3   2 1e-5f    1e-5
+glm_5_3/ascendc/kda_k_glm53_1x8192_k4096                dav-2201 glm53_kda_k_do                   12000000 5 15 1e-5f 1e-6 1 8192 4096
+glm_5_3/ascendc/kda_v_glm53_1x8192_k4096                dav-2201 glm53_kda_v_do                   12000000 5 15 1e-5f 1e-6 1 8192 4096
+glm_5_3/ascendc/kda_g_a_glm53_1x128_k4096                dav-2201 glm53_kda_g_a_do                 9000000 5 15 1e-5f 1e-6 1 128 4096
+glm_5_3/ascendc/kda_g_b_glm53_1x8192_k128                dav-2201 glm53_kda_g_b_do                 9000000 5 15 1e-5f 1e-6 1 8192 128
+glm_5_3/ascendc/kda_f_a_glm53_1x128_k4096                dav-2201 glm53_kda_f_a_do                 9000000 5 15 1e-5f 1e-6 1 128 4096
 ROWS
 
 printf 'host: %s\n' "$(hostname)"
@@ -114,8 +119,3 @@ done <<< "${ROWS}"
 
 printf '\n%s\n' "$([ "${failed}" -eq 0 ] && echo "all kernels passed" || echo "${failed} kernel(s) failed")"
 exit $([ "${failed}" -eq 0 ] && echo 0 || echo 1)
-glm_5_3/ascendc/kda_k_glm53_1x8192_k4096                dav-2201 glm53_kda_k_do                   12000000 5 15 1e-5f 1e-6 1 8192 4096
-glm_5_3/ascendc/kda_v_glm53_1x8192_k4096                dav-2201 glm53_kda_v_do                   12000000 5 15 1e-5f 1e-6 1 8192 4096
-glm_5_3/ascendc/kda_g_a_glm53_1x128_k4096                dav-2201 glm53_kda_g_a_do                 9000000 5 15 1e-5f 1e-6 1 128 4096
-glm_5_3/ascendc/kda_g_b_glm53_1x8192_k128                dav-2201 glm53_kda_g_b_do                 9000000 5 15 1e-5f 1e-6 1 8192 128
-glm_5_3/ascendc/kda_f_a_glm53_1x128_k4096                dav-2201 glm53_kda_f_a_do                 9000000 5 15 1e-5f 1e-6 1 128 4096

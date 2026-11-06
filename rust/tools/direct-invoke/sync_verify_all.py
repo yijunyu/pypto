@@ -48,8 +48,14 @@ def rows_from_manifests():
 
 
 def main():
-    # compare on the path WITHOUT the .cpp suffix, since the rows carry the stem
+    # READ THE TABLE, NOT THE FILE. The rows live in a `ROWS <<'ROWS'` heredoc and the gate parses
+    # exactly that block; grepping the whole script sees rows appended after the heredoc and reports a
+    # false pass -- which is what happened in iteration 167, where this tool said "covered" and
+    # test_verify_all_covers_the_evidence said otherwise. THE GATE IS THE AUTHORITY.
     text = VERIFY.read_text()
+    m = re.search(r"ROWS <<'ROWS'\n(.*?)\nROWS", text, re.S)
+    assert m, "could not find the ROWS table in verify_all.sh"
+    text = m.group(1)
     missing, present = [], []
     for corpus, name, path, arch, do, rest in rows_from_manifests():
         if path.replace(".cpp", "") in text:
