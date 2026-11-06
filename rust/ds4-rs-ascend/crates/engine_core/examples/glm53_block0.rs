@@ -210,7 +210,15 @@ fn main() -> anyhow::Result<()> {
         let k = proj(&wk, &xin);
         let v = proj(&wv, &xin);
         let params = BlockParams {
-            heads, head_dim, a_log: vec![0.0; heads],
+            // `kda_a_log` IS in the file and its shape matches a_log exactly: 64 values, one per head. The
+            // other KDA constants are NOT yet loaded -- see the note in the commit; the conv is per-channel
+            // ([4,1,8192]) and beta is [4096,64], neither of which `BlockParams` can hold.
+            heads, head_dim,
+            a_log: {
+                let raw = g.dequant_name(&format!("blk.{b}.kda_a_log.weight"))?;
+                anyhow::ensure!(raw.len() == heads, "kda_a_log is {} not {heads}", raw.len());
+                raw.iter().map(|v| *v as f64).collect()
+            },
             conv_q: [1.0, 0.0, 0.0, 0.0], conv_k: [1.0, 0.0, 0.0, 0.0], conv_v: [1.0, 0.0, 0.0, 0.0],
             dt_bias: vec![0.0; heads * head_dim], beta: vec![0.5; heads],
             eps: cfg.rms_norm_eps as f64,
