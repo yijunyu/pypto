@@ -80,3 +80,55 @@ pub fn moe_ffn(g: &ShardedGguf, scale: f64, b: usize, x: &[f64], d: usize, eps: 
     for i in 0..d { acc[i] += sdn[i]; }
     Ok((acc, used))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gguf::{GgmlType, MetaValue};
+
+    fn file_with(meta: Vec<(String, MetaValue)>) -> GgufFile {
+        GgufFile {
+            version: 3,
+            n_tensors: 0,
+            n_meta_kv: meta.len() as u64,
+            meta,
+            tensors: Vec::new(),
+            tensor_table_offset: 0,
+            tensor_data_offset: 0,
+            file_size: 0,
+        }
+    }
+
+    /// BUG (iteration 180): the expert scale was a transcribed 2.5. The reader must FIND it by suffix.
+    #[test]
+    fn the_expert_scale_is_read_by_suffix() {
+        let g = file_with(vec![(
+            "glm5-next.expert_weights_scale".to_string(),
+            MetaValue::F32(2.5),
+        )]);
+        assert!((expert_weights_scale(&g).unwrap() - 2.5).abs() < 1e-6);
+    }
+
+    /// And a checkpoint WITHOUT the key must REFUSE rather than default, which was the actual defect: a missing
+    /// scale weights the expert sum wrongly and silently.
+    #[test]
+    fn a_missing_expert_scale_is_refused() {
+        let g = file_with(vec![(
+            "glm5-next.expert_count".to_string(),
+            MetaValue::U32(288),
+        )]);
+        let err = expert_weights_scale(&g).expect_err("a missing scale must not default");
+        assert!(format!("{err}").contains("expert_weights_scale"), "got: {err}");
+    }
+
+    /// A non-float value is refused rather than cast.
+    #[test]
+    fn a_non_float_expert_scale_is_refused() {
+        let g = file_with(vec![(
+            "glm5-next.expert_weights_scale".to_string(),
+            MetaValue::U32(2),
+        )]);
+        let err = expert_weights_scale(&g).expect_err("an integer scale must not be cast");
+        assert!(format!("{err}").contains("not a float"), "got: {err}");
+    }
+}

@@ -148,7 +148,8 @@ impl Params {
         // THE PREDICTION SEES ALL STREAMS, NOT ONE. `hc_attn_fn` is [16384, 24] and 16384 = 4 streams x 4096, so the
         // matrix is predicted from the FLATTENED state. Taking `state[0].len()` (= 4096) made the assert report
         // "must be [4096, 24]" against a 393216-value tensor, which is how this was found.
-        let d = state.len() * state[0].len();
+        // ONE stream's width: this mixes ACROSS streams, per channel, so the per-stream length is the loop bound.
+        let d = state[0].len();
         let mut next = vec![vec![0.0f64; d]; n];
         for i in 0..n {
             for j in 0..n {
@@ -210,4 +211,95 @@ mod tests {
     // A test asserting that identity mixing preserves equal streams lived here. It broke when `block_input` and
     // `next_state` were given their correct widths, which means it was pinning a behaviour of the BUG rather than of the
     // operator. Removed rather than retuned, with the widths now named per function as the actual fix.
+}
+
+#[cfg(test)]
+mod regression {
+    //! One test per bug this module has actually had, so none of them can come back silently.
+    use super::*;
+
+    /// BUG (iteration 253): the parameter count was `4n`; the layout needs `2n + n*n` (24 for n=4).
+    /// `predict` must accept the 24-wide form and must NOT accept the 16-wide one.
+    #[test]
+    fn the_parameter_count_is_2n_plus_n_squared() {
+        let n = 4;
+        let d = 8;
+        let n_params = 2 * n + n * n; // 24
+        // `predict` sees the FLATTENED state, so hc_fn is [n * d, n_params] -- the same distinction this test exists for.
+        let hc_fn = vec![0.01f32; (n * d) * n_params];
+        let base = vec![0.0f32; n_params];
+        let scale = [1.0f32, 1.0, 1.0];
+        let state = vec![vec![1.0f64; d]; n];
+        let p = Params::predict(&hc_fn, &base, &scale, &state, n, 1, 1e-8);
+        assert_eq!(p.matrix.len(), n * n, "the matrix is the LAST n*n parameters");
+        assert_eq!(p.w_in.len(), n);
+        assert_eq!(p.w_out.len(), n);
+
+        // and the OLD, wrong width must not silently work
+        let wrong = vec![0.01f32; (n * d) * 4 * n]; // the OLD 4n parameter count
+        let wrong_base = vec![0.0f32; 4 * n];
+        if n * n != 2 * n {
+            assert!(
+                std::panic::catch_unwind(|| {
+                    Params::predict(&wrong, &wrong_base, &scale, &state, n, 1, 1e-8)
+                })
+                .is_err(),
+                "a 4n-wide parameter vector must be REJECTED, not silently accepted"
+            );
+        }
+    }
+
+    /// BUG (iteration 255): the prediction saw ONE stream's width instead of ALL streams flattened.
+    /// `hc_attn_fn` is [n_streams * d, n_params]; a one-stream-wide tensor must be rejected.
+    #[test]
+    fn the_prediction_width_is_the_flattened_state() {
+        let n = 2;
+        let d = 4;
+        let n_params = 2 * n + n * n;
+        let state = vec![vec![1.0f64; d]; n];
+        let total = n * d;
+        let hc_fn = vec![0.001f32; total * n_params];
+        let base = vec![0.0f32; n_params];
+        let scale = [1.0f32, 1.0, 1.0];
+        let ok = std::panic::catch_unwind(|| Params::predict(&hc_fn, &base, &scale, &state, n, 1, 1e-8));
+        assert!(ok.is_ok(), "a flattened-width hc_fn must be accepted");
+
+        let short = vec![0.001f32; d * n_params]; // one stream only
+        let res = std::panic::catch_unwind(|| Params::predict(&short, &base, &scale, &state, n, 1, 1e-8));
+        assert!(res.is_err(), "a one-stream-wide hc_fn must be REJECTED");
+    }
+
+    /// BUG (iteration 255): `block_input` and `next_state` were given the FLATTENED width, which panicked on
+    /// `state[j][c]` for c >= d. Both must work for n streams of d channels and keep the per-stream width.
+    #[test]
+    fn mixing_works_for_multiple_streams_of_per_stream_width() {
+        let n = 3;
+        let d = 5;
+        let mut matrix = vec![1.0 / n as f64; n * n];
+        matrix[0] = 1.0; // not special, just non-degenerate
+        let p = Params { matrix, w_in: vec![0.5; n], w_out: vec![0.0; n] };
+        let state = vec![vec![0.7f64; d]; n];
+        let bi = p.block_input(&state, n);
+        assert_eq!(bi.len(), d, "block_input is ONE stream wide");
+        let ns = p.next_state(&state, &bi, n);
+        assert_eq!(ns.len(), n);
+        assert!(ns.iter().all(|r| r.len() == d), "next_state keeps n rows of d");
+    }
+
+    /// BUG (iteration 252): Sinkhorn's first pass is a SOFTMAX. With two identical rows the softmax makes them
+    /// uniform (each entry 1/n), which a sum-normalisation of identical rows would not change from their ratio.
+    #[test]
+    fn the_first_pass_is_a_softmax() {
+        let n = 4;
+        // rows [0,1,2,3] repeated: a softmax gives e^-3..1 normalised; a sum-normalisation would give 0, 1/6, 2/6, 3/6
+        let mut m = Vec::new();
+        for _ in 0..n {
+            m.extend_from_slice(&[0.0, 1.0, 2.0, 3.0]);
+        }
+        let s = sinkhorn(&m, n, 1, 0.0);
+        let row: Vec<f64> = s[..n].to_vec();
+        // the softmax of [0,1,2,3] is [0.0321, 0.0871, 0.2369, 0.6439]; the sum-normalised form would be
+        // [0, 0.1667, 0.3333, 0.5] -- distinguishable at the first entry, which a sum-normalisation leaves at 0
+        assert!(row[0] > 1e-3, "a softmax gives its smallest entry a POSITIVE value; a sum-normalisation leaves 0: {row:?}");
+    }
 }
