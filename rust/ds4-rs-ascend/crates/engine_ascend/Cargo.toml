@@ -37,6 +37,10 @@ path = "src/bin/ds4_generate.rs"
 ascend = []
 
 [[example]]
+name = "w8a8_lm_head_banded"
+required-features = ["ascend"]
+
+[[example]]
 name = "w8a8_moe_device"
 required-features = ["ascend"]
 
