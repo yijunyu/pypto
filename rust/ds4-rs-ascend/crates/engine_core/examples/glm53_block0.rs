@@ -273,7 +273,7 @@ fn main() -> anyhow::Result<()> {
 
     // 8192-wide projections from the real weight matrix (f64, one row at a time).
     let proj = |w: &[f32]| -> Vec<f64> {
-        (0..8192)
+        (0..heads * head_dim)
             .map(|r| (0..d).map(|c| w[r * d + c] as f64 * x[c]).sum())
             .collect()
     };
@@ -356,7 +356,7 @@ fn main() -> anyhow::Result<()> {
         let wk = dequant_either(&g, b, "k")?;
         let wv = dequant_either(&g, b, "v")?;
         let proj = |w: &[f32], xv: &[f64]| -> Vec<f64> {
-            (0..8192).map(|r| (0..d).map(|c| w[r * d + c] as f64 * xv[c]).sum()).collect()
+            (0..heads * head_dim).map(|r| (0..d).map(|c| w[r * d + c] as f64 * xv[c]).sum()).collect()
         };
         let q = proj(&wq, &xin);
         let k = proj(&wk, &xin);
