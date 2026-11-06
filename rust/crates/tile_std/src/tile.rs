@@ -223,11 +223,23 @@ extern "C" {
     /// Returns a (ROWS × 1) tile where each row is the max of that row.
     pub fn __tile_reduce_max_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
+    /// Copy COUNT elements from SRC into DST starting at element OFFSET.
+    ///
+    /// Attention builds its 128 scores BLOCK BY BLOCK (16 blocks of 8) and needs to place each
+    /// block's 8 results at 8*b. There is no tile-slice write in this DSL otherwise -- every other
+    /// intrinsic produces a whole tile -- so the two-pass formulation cannot be expressed without it.
+    pub fn __tile_slice_store_f32(dst: u32, src: u32, offset: u32, count: u32) -> u32;
+
     /// `acc += w[row] * src[row][:]` -- one row of a weighted-V accumulation.
     ///
     /// The last piece the engine's flash attention needs, and it exists because the column-wise
     /// reduction that `acc += sum_r w[r]*V[r][:]` would otherwise require is NOT in this DSL
     /// (`__tile_reduce_sum_f32` is row-wise). Accumulating row by row needs no reduction at all.
+    /// `windex` addresses the weight tile, `row` the source tile: attention's weights are indexed by
+    /// GLOBAL position (8*b + r) while the source row is the block-local r, so one index cannot serve
+    /// both. The 5-argument form assumes they coincide.
+    pub fn __tile_row_axpy2_f32(acc: u32, src: u32, w: u32, win: u32, row: u32, cols: u32) -> u32;
+
     pub fn __tile_row_axpy_f32(acc: u32, src: u32, w: u32, row: u32, cols: u32) -> u32;
 
     /// Scale each row of an ROWS x COLS tile by that row's entry in a 1 x ROWS tile.

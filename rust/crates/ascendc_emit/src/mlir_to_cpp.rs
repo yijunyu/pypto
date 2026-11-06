@@ -250,6 +250,8 @@ const KNOWN_INTRINSICS: &[&str] = &[    // Implemented on main after this allowl
     "__tile_col_expand_f32",
     "__tile_row_scale_f32",
     "__tile_row_axpy_f32",
+    "__tile_row_axpy2_f32",
+    "__tile_slice_store_f32",
     "__tile_max_f16",
     "__tile_maxs_f16",
     "__tile_maxs_f32",
@@ -1554,6 +1556,12 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         //   2. the buffer count here, or the kernel references undeclared buffers (rounds 20, 54, 61);
         //   3. the `arm_allocates_buffers` set, or the alias plan folds live buffers (rounds 22, 59);
         //   4. a `tile_std` declaration, or call conformance refuses the tile.
+        if line.contains("@__tile_row_axpy2_f32") {
+            vec_buf_count += 1;
+        }
+        if line.contains("@__tile_slice_store_f32") {
+            vec_buf_count += 1;
+        }
         if line.contains("@__tile_row_axpy_f32") {
             // one cols-wide temp: `Muls` into it, then `Add` into the accumulator
             vec_buf_count += 1;
@@ -5989,6 +5997,78 @@ fn generate_vector_compute_code(
             // this emitter uses (`Duplicate` fills from a scalar the compiler
             // knows), so it is a scalar loop -- the same shape the rope identity
             // uses, and honest about being a loop rather than a vector op.
+            // --- __tile_slice_store_f32: place COUNT elements at OFFSET ---
+            if line.contains("@__tile_slice_store_f32") {
+                if let Some(result) = extract_result(line) {
+                    let args = extract_call_args(line);
+                    if args.len() >= 4 {
+                        let dst = resolve_buf_index(&args[0], &ssa_to_buf, &values);
+                        let src = resolve_buf_index(&args[1], &ssa_to_buf, &values);
+                        let off_expr = resolve_value(&args[2], &values);
+                        let cnt_expr = resolve_value(&args[3], &values);
+                        writeln!(
+                            code,
+                            r#"{{ // tile_slice_store
+  AscendC::PipeBarrier<PIPE_ALL>();
+  int __ss_off = ({off}); int __ss_cnt = ({cnt});
+  for (int __i = 0; __i < __ss_cnt; ++__i) buf{d}.SetValue(__ss_off + __i, buf{s}.GetValue(__i));
+  AscendC::PipeBarrier<PIPE_ALL>();
+}}"#,
+                            off = off_expr, cnt = cnt_expr, d = dst, s = src
+                        )
+                        .unwrap();
+                        vec_dirty_bufs.insert(dst);
+                        vec_compute_dst_bufs.insert(dst);
+                        ssa_to_buf.insert(result.clone(), dst);
+                        values.insert(
+                            result,
+                            CppValue { expr: format!("{}", dst), cpp_type: "uint32_t".to_string() },
+                        );
+                    }
+                }
+                continue;
+            }
+
+            // --- __tile_row_axpy2_f32: acc += w[win] * src[row][:] ---
+            if line.contains("@__tile_row_axpy2_f32") {
+                if let Some(result) = extract_result(line) {
+                    let args = extract_call_args(line);
+                    if args.len() >= 6 {
+                        let acc = resolve_buf_index(&args[0], &ssa_to_buf, &values);
+                        let src = resolve_buf_index(&args[1], &ssa_to_buf, &values);
+                        let wt = resolve_buf_index(&args[2], &ssa_to_buf, &values);
+                        let win_expr = resolve_value(&args[3], &values);
+                        let row_expr = resolve_value(&args[4], &values);
+                        let cols_expr = resolve_value(&args[5], &values);
+                        let tmp = buf_counter;
+                        buf_counter += 1;
+                        buf_sizes.insert(tmp, format!("(({}) + 7) / 8 * 8", cols_expr));
+                        writeln!(
+                            code,
+                            r#"{{ // tile_row_axpy2: acc += w[win] * src[row][:]
+  AscendC::PipeBarrier<PIPE_ALL>();
+  int __a2_win = ({win}); int __a2_row = ({row}); int __a2_cols = ({cols});
+  AscendC::Muls(buf{t}[0], buf{s}[__a2_row * __a2_cols], buf{w}.GetValue(__a2_win), __a2_cols);
+  AscendC::PipeBarrier<PIPE_V>();
+  AscendC::Add(buf{a}[0], buf{a}[0], buf{t}[0], __a2_cols);
+  AscendC::PipeBarrier<PIPE_ALL>();
+}}"#,
+                            a = acc, s = src, w = wt, t = tmp,
+                            win = win_expr, row = row_expr, cols = cols_expr
+                        )
+                        .unwrap();
+                        vec_dirty_bufs.insert(acc);
+                        vec_compute_dst_bufs.insert(acc);
+                        ssa_to_buf.insert(result.clone(), acc);
+                        values.insert(
+                            result,
+                            CppValue { expr: format!("{}", acc), cpp_type: "uint32_t".to_string() },
+                        );
+                    }
+                }
+                continue;
+            }
+
             // --- __tile_row_axpy_f32: acc += w[row] * src[row][:] ---
             //
             // `Axpy(dst, src0, src1, scalar, n)` computes `src0*scalar + src1`, so with dst=src1=acc
