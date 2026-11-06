@@ -110,6 +110,13 @@ W8A8_MV = [
     ("proj_w8a8_engine_1x1024_k4096", 4096, 1024),
     ("proj_w8a8_engine_1x32768_k1024", 1024, 32768),
     ("proj_w8a8_engine_1x512_k4096", 4096, 512),
+    # THE EXPERT SHAPES. `mx4pk_2048_4096` and `mx4pk_4096_2048` are the two slots whose shapes are
+    # exactly the MoE expert matvecs (w1/up: 2048 out from k=4096; w2/down: 4096 out from k=2048), and
+    # they are PACKED MXFP4. The deployment quantisation is w8a8, so these rows give those shapes a
+    # w8a8 artefact -- which is what moving the MoE onto the device needs, since a dispatch through
+    # `KernelDispatcher::matvec_f32` finds no binding and falls back to the CPU otherwise.
+    ("proj_w8a8_engine_1x2048_k4096", 4096, 2048),
+    ("proj_w8a8_engine_1x4096_k2048", 2048, 4096),
     # k=8192 uses the CHUNKED arm: the non-chunked one needs eight k-wide buffers and is
     # refused as a UB overflow, and its earlier "successful" emission only fit by aliasing
     # them (25 of 4096 outputs +inf). The chunked form keeps every buffer CHUNK-wide, so k

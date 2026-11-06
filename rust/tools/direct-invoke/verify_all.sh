@@ -54,6 +54,8 @@ engine/ascendc/proj_w8a8_engine_1x512_k4096           dav-2201 proj_w8a8_engine_
 engine/ascendc/proj_w8a8_engine_1x32768_k1024         dav-2201 proj_w8a8_engine_1x32768_k1024_do 8400000 5 15 1e-5f 1e-6 3 32768 1024
 engine/ascendc/proj_w8a8_engine_1x4096_k8192           dav-2201 proj_w8a8_engine_1x4096_k8192_do   8400000 5 15 1e-5f 1e-6 3 4096 8192
 engine/ascendc/proj_w8a8_engine_1x24_k16384           dav-2201 proj_w8a8_engine_1x24_k16384_do   200000 5 15 1e-5f 1e-6 3 24 16384
+# The MoE down-projection shape (mx4pk_2048_4096's extents, served by w8a8).
+engine/ascendc/proj_w8a8_engine_1x4096_k2048          dav-2201 proj_w8a8_engine_1x4096_k2048_do  9000000 5 15 1e-5f 1e-6 3 4096 2048
 # Attention primitives (certified 2026-11-06, bit-exact). The engine's flash kernel needs both.
 # NOTE: these are PRIMITIVE probes, not engine slots; they belong here so a regression is caught.
 engine/ascendc/../prim/col_expand_1x8_16                        dav-2201 ce_probe_do   128 2 18 1e-5f 1e-6 3 8 16

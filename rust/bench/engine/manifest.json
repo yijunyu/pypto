@@ -5,11 +5,11 @@
  "shapes_source": "rust/ds4-rs-ascend/crates/engine_ascend/src/device.rs LAYER0_KERNELS",
  "generator": "shapes/gen_engine.py",
  "totals": {
-  "kernels": 14,
-  "tile": 14,
+  "kernels": 15,
+  "tile": 15,
   "pto": 0,
-  "ascendc": 14,
-  "device_verified": 14
+  "ascendc": 15,
+  "device_verified": 15
  },
  "kernels": {
   "rope_halves_engine_1x64": {
@@ -209,6 +209,19 @@
     "k": 1024,
     "alloc_floats": 34000000,
     "args": 4
+   }
+  },
+  "proj_w8a8_engine_1x4096_k2048": {
+   "tile": "tile/proj_w8a8_engine_1x4096_k2048.tile",
+   "pto": null,
+   "ascendc": "ascendc/proj_w8a8_engine_1x4096_k2048.cpp",
+   "device_check": "PASS 2026-11-06 on 910B2: wrong=0, max_rel 2.270e-07 against an f64 oracle, 3 launches. The MoE expert w2/down shape (4096 out from k=2048), which the engine's slot table names as `mx4pk_2048_4096` -- a packed-MXFP4 socket. This artefact is w8a8, so it serves the SHAPE and not that socket's format: crediting it needs the deliberate slot switch.",
+   "device_metrics": {
+    "max_rel": 2.27e-07,
+    "repeat": 3,
+    "n": 4096,
+    "k": 2048,
+    "args": 5
    }
   }
  }

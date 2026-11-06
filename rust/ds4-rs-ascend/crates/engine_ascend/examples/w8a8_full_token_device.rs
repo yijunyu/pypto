@@ -31,14 +31,26 @@ fn rms_norm(x: &[f32], g: &[f32], eps: f32) -> Vec<f32> {
     x.iter().zip(g).map(|(v, g)| v * inv * g).collect()
 }
 fn silu(x: f32) -> f32 { x / (1.0 + (-x).exp()) }
-fn expert_out(pkg: &Package, prefix: &str, h: &[f32], d_ffn: usize) -> anyhow::Result<Vec<f32>> {
+/// One expert, with its THREE matvecs going through the kernel dispatcher.
+///
+/// On the device dispatcher those become `ds4_q8mv_*` when the shape matches a bound spec and fall back
+/// to the CPU otherwise -- so this is safe on either dispatcher and the caller decides which. The MoE is
+/// the majority of the model's FLOPs (six experts x three matvecs per layer), which is why it is the
+/// next thing to move after the attention block.
+fn expert_out<D: engine_core::dispatch::KernelDispatcher>(
+    kernels: &D,
+    pkg: &Package,
+    prefix: &str,
+    h: &[f32],
+    d_ffn: usize,
+) -> anyhow::Result<Vec<f32>> {
     let w1 = pkg.dequant_tensor(&format!("{prefix}.w1.weight"))?;
     let w3 = pkg.dequant_tensor(&format!("{prefix}.w3.weight"))?;
     let w2 = pkg.dequant_tensor(&format!("{prefix}.w2.weight"))?;
-    let g = matvec(&w1, h, d_ffn);
-    let u = matvec(&w3, h, d_ffn);
+    let g = kernels.matvec_f32(&w1, h, d_ffn);
+    let u = kernels.matvec_f32(&w3, h, d_ffn);
     let act: Vec<f32> = g.iter().zip(&u).map(|(&a, &b)| silu(a) * b).collect();
-    Ok(matvec(&w2, &act, h.len()))
+    Ok(kernels.matvec_f32(&w2, &act, h.len()))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -114,7 +126,7 @@ fn main() -> anyhow::Result<()> {
         // MoE: hash routing for the first three layers, router scores after that.
         let fg = pkg.f32_tensor(&format!("{p}.ffn_norm.weight"))?;
         let hn = rms_norm(&prefix.normed, &fg, 1e-6);
-        let mut routed = expert_out(&pkg, &format!("{p}.ffn.shared_experts"), &hn, d_ffn)?;
+        let mut routed = expert_out(attn.kernels(), &pkg, &format!("{p}.ffn.shared_experts"), &hn, d_ffn)?;
         let picked: Vec<usize> = if layer_idx < 3 {
             let raw = pkg.raw(&format!("{p}.ffn.gate.tid2eid"))?.1;
             let ids: Vec<i32> = raw.chunks_exact(4).map(|c| i32::from_le_bytes([c[0],c[1],c[2],c[3]])).collect();
@@ -140,7 +152,7 @@ fn main() -> anyhow::Result<()> {
             picked.iter().map(|&e| probs[e] / s.max(6.103515625e-5)).collect()
         };
         for (i, &e) in picked.iter().enumerate() {
-            let y = expert_out(&pkg, &format!("{p}.ffn.experts.{e}"), &hn, d_ffn)?;
+            let y = expert_out(attn.kernels(), &pkg, &format!("{p}.ffn.experts.{e}"), &hn, d_ffn)?;
             for (a, b) in routed.iter_mut().zip(&y) { *a += w[i] * b; }
         }
 
