@@ -1022,6 +1022,21 @@ impl DeviceLaunch {
                 bail!("aclrtMalloc({out_bytes}) failed for {} output", spec.name);
             }
             args.push(d_out);
+            // DS4_LAUNCH_DEBUG: the parameter block, printed BEFORE the launch. run_raw_cached is the
+            // path every w8a8 launch takes; a hang then leaves one printed block as evidence, which is
+            // exactly what four rounds of post-hoc elimination did not have.
+            if std::env::var_os("DS4_LAUNCH_DEBUG").is_some() {
+                eprintln!(
+                    "[launch] {} args={} ptbytes={} out_len={} out_bytes={out_bytes}",
+                    spec.name,
+                    args.len(),
+                    args.len() * std::mem::size_of::<*mut u8>(),
+                    out_len
+                );
+                for i in 0..inputs.len() {
+                    eprintln!("[launch]   in[{i}] len={}", inputs[i].0.len());
+                }
+            }
             let rc = ffi::rtKernelLaunch(
                 self.stub(spec.name)?,
                 spec.block_dim(USABLE_AIV),
