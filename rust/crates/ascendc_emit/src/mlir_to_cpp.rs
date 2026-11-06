@@ -1598,9 +1598,10 @@ fn analyze_kernel(func: &MlirFunc) -> Result<KernelAnalysis, String> {
         }
         if line.contains("@__tile_matvec_w8a8_gm_f32") {
             // x chunk, int8 chunk, half chunk, f32 chunk, shifted chunk, product chunk,
-            // reduce work chunk, cell, out. NINE, and all of them are chunk-sized rather
-            // than k-sized -- that is what lets k exceed the buffer.
-            vec_buf_count += 9;
+            // reduce work chunk, cell, out, and TWO 2048-row plane bands. ELEVEN. The planes
+            // were read with a row-indexed scalar GM access until this round, the same defect
+            // the other w8a8 arm had; this arm is the one that can serve k > ~5K.
+            vec_buf_count += 11;
         }
         // EVERY hand-written arm must be listed here. `q8mv` was added to the emitter but not to
         // this set, so at k=8192 the alias plan engaged and folded its simultaneously-live buffers
@@ -8664,10 +8665,10 @@ fn generate_vector_compute_code(
                                 const CHUNK: usize = 4096;
                                 let ch = format!("({CHUNK})");
                                 let nb = |sz: String| format!("(({}) + 7) / 8 * 8", sz);
-                                let mut b = [0usize; 9];
+                                let mut b = [0usize; 11];
                                 for (slot, elem) in b.iter_mut().zip([
                                     None, Some("int8_t"), Some("half"), None, None, None, None,
-                                    None, None,
+                                    None, None, None, None,
                                 ]) {
                                     let i = buf_counter;
                                     buf_counter += 1;
@@ -8677,18 +8678,27 @@ fn generate_vector_compute_code(
                                     }
                                     *slot = i;
                                 }
-                                let [xc, w8, hf, wf, sh, pr, rw, cell, out] = b;
-                                // `out` holds n floats, not a chunk.
+                                let [xc, w8, hf, wf, sh, pr, rw, cell, out, ts, to] = b;
+                                // `out` holds n floats, not a chunk; the plane bands are 2048 rows.
                                 buf_sizes.insert(out, nb(n_expr.clone()));
+                                buf_sizes.insert(ts, nb("(2048)".to_string()));
+                                buf_sizes.insert(to, nb("(2048)".to_string()));
                                 writeln!(
                                     code,
                                     r#"{{ // tile_matvec_w8a8_gm: y[i] = sum_k a[k] * ((q - off[i]) * sc[i]), K CHUNKED
   int __n = ({n}); int __k = ({k});
   const int __chunk = {chunk};
   AscendC::SetFlag<AscendC::HardEvent::V_MTE2>(EVENT_ID1);
-  for (int __i = 0; __i < __n; ++__i) {{
-    const float __sc = ((__gm__ float *)gm{si}Tensor.GetPhyAddr())[__i];
-    const float __off = ((__gm__ float *)gm{oi}Tensor.GetPhyAddr())[__i];
+  const int __band = 2048;
+  for (int __b = 0; __b < __n; __b += __band) {{
+  const int __nb = (__n - __b < __band) ? (__n - __b) : __band;
+  AscendC::DataCopy(buf{ts}, gm{si}Tensor[__b], __nb);
+  AscendC::DataCopy(buf{to}, gm{oi}Tensor[__b], __nb);
+  AscendC::SetFlag<AscendC::HardEvent::MTE2_S>(EVENT_ID0);
+  AscendC::WaitFlag<AscendC::HardEvent::MTE2_S>(EVENT_ID0);
+  for (int __i = __b; __i < __b + __nb; ++__i) {{
+    const float __sc = buf{ts}.GetValue(__i - __b);
+    const float __off = buf{to}.GetValue(__i - __b);
     float __acc = 0.0f;
     for (int __k0 = 0; __k0 < __k; __k0 += __chunk) {{
       int __kc = __k - __k0;
@@ -8720,6 +8730,7 @@ fn generate_vector_compute_code(
     }}
     buf{o}.SetValue(__i, __acc);
   }}
+    }}
 }}"#,
                                     n = n_expr,
                                     k = k_expr,
