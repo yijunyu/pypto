@@ -287,16 +287,23 @@ fn main() -> anyhow::Result<()> {
     // PREFILL_ONE=1 runs the SINGLE-token chain, which is the only fair comparison with the decode driver.
     if std::env::var_os("PREFILL_ONE").is_some() {
         let one = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?])?;
+        // THE FINAL NORM, which the decode driver applies and this one did not. It preserves direction and changes
+        // magnitude, which is exactly the signature the comparison found: identical residuals, 4x logits.
+        let xf = match g.dequant_name("output_norm.weight") {
+            Ok(w) => gated_rms_norm(&one[0], &w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0; c.d], c.eps),
+            Err(_) => one[0].clone(),
+        };
         let head = g.dequant_name("token_embd.weight")?;
         let hw = head.len() / c.d;
         let mut best = (f64::NEG_INFINITY, 0usize);
         for r in 0..hw {
             let mut acc = 0.0;
-            for cc in 0..c.d { acc += head[r * c.d + cc] as f64 * one[0][cc]; }
+            for cc in 0..c.d { acc += head[r * c.d + cc] as f64 * xf[cc]; }
             if acc > best.0 { best = (acc, r); }
         }
-        let rms = (one[0].iter().map(|v| v * v).sum::<f64>() / c.d as f64).sqrt();
+        let rms = (xf.iter().map(|v| v * v).sum::<f64>() / c.d as f64).sqrt();
         println!("ONE-TOKEN prefill after {blocks} blocks: {} ({:.6})  rms {rms:.6}", best.1, best.0);
+        println!("FINAL-VEC prefill: {:?}", &one[0][..4]);
         return Ok(());
     }
     let h1 = run(&g, &c, &plan, blocks, vec![embed(&g, &v, ids[0], c.d)?])?;
