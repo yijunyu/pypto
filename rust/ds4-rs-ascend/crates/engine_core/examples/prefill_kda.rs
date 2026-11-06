@@ -182,6 +182,10 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                     }
                     v
                 };
+                if std::env::var_os("KDA_INTER").is_some() {
+                    println!("KDA-INTER blk{b} prefill: q0={:?} beta={:?} dt0={:?} conv_q0={:?}",
+                        q[0][0], &params.beta[..2], &params.dt_bias[..2], &params.conv_q[0]);
+                }
                 let out = block(&params, &flat(&q), &flat(&k), &flat(&v), &flat(&gate), n, &onw, &ogate);
                 let wo = g.dequant_name(&format!("blk.{b}.kda_output.weight"))?;
                 for t in 0..n {
@@ -217,7 +221,7 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
             }
             _ => {}
         }
-        if b <= 3 { println!("BLK{b}-TENSOR prefill(after attn+FFN): {:?}", &x[0][..3]); }
+        if b <= 4 { println!("BLK{b}-TENSOR prefill(after attn+FFN): {:?}", &x[0][..3]); }
     }
     Ok(x)
 }

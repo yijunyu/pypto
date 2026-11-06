@@ -206,7 +206,7 @@ fn main() -> anyhow::Result<()> {
             for i in 0..d { x[i] += op[i]; }
             let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
             println!("block {b}: MLA, rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
-            if b <= 3 { println!("BLK{b}-TENSOR decode (MLA): {:?}", &x[..3]); }
+            if b <= 4 { println!("BLK{b}-TENSOR decode (MLA): {:?}", &x[..3]); }
             anyhow::ensure!(x.iter().all(|v| v.is_finite()), "the residual after MLA block {b} is not finite");
             // THE FFN IS NOT OPTIONAL ON AN MLA BLOCK. `continue` used to skip straight to the next block, so every
             // MLA block ran its attention and NOT its feed-forward -- which is why this driver and the prefill driver
@@ -305,6 +305,10 @@ fn main() -> anyhow::Result<()> {
                 1.0 / (1.0 + (-z).exp())
             })
             .collect();
+        if b >= 0 && std::env::var_os("KDA_INTER").is_some() {
+            println!("KDA-INTER blk{b} decode: q0={:?} beta={:?} dt0={:?} conv_q0={:?}",
+                q[0], &params.beta[..2], &params.dt_bias[..2], &params.conv_q[0]);
+        }
         let o = block(&params, &q, &k, &v, &gate, 1, &onw, &ogate);
         anyhow::ensure!(o.iter().all(|v| v.is_finite()), "block {b} produced a non-finite value");
         // output projection (8192 -> d) then the residual
@@ -336,7 +340,7 @@ fn main() -> anyhow::Result<()> {
         }
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
         println!("block {b}: rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
-        if b <= 3 { println!("BLK{b}-TENSOR decode: {:?}", &x[..3]); }
+        if b <= 4 { println!("BLK{b}-TENSOR decode: {:?}", &x[..3]); }
         anyhow::ensure!(x.iter().all(|v| v.is_finite()), "the residual after block {b} is not finite");
         anyhow::ensure!(rms > 0.0, "the residual after block {b} is all zero");
     }
