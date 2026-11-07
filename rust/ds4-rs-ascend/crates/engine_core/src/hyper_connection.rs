@@ -182,33 +182,20 @@ pub fn sublayer<F>(
 where
     F: FnOnce(&[f64]) -> Vec<f64>,
 {
-    // THE REFERENCE PATH, behind `HC_REFERENCE=1` so the default stays byte-identical until B20's criterion is met.
-    // The reference does not collapse-add-re-expand: it takes `hc_pre` of the ORIGINAL streams, runs the sublayer, and builds
-    // each copy as `post[i]*out + sum_j comb[i][j]*x[j]`. The returned "residual" is the collapsed sublayer input `xin`, which
-    // is what callers log as the stream.
-    if std::env::var_os("HC_REFERENCE").is_some() {
-        let d = streams[0].len();
-        let flat: Vec<f64> = streams.iter().flatten().copied().collect();
-        let m = ref_mixes(&flat, hc_fn, hc_scale, hc_base, n, iters, eps);
-        let xin: Vec<f64> = (0..d).map(|c| (0..n).map(|j| m.pre[j] * streams[j][c]).sum()).collect();
-        let out = sublayer(&xin);
-        assert_eq!(out.len(), d, "sublayer changed the width: {} vs {}", out.len(), d);
-        let next: Vec<Vec<f64>> = (0..n)
-            .map(|i| {
-                (0..d)
-                    .map(|c| m.post[i] * out[c] + (0..n).map(|j| m.comb[i * n + j] * streams[j][c]).sum::<f64>())
-                    .collect()
-            })
-            .collect();
-        return (xin, next);
-    }
-    let hp = Params::predict(hc_fn, hc_base, hc_scale, streams, n, iters, eps);
-    let x = hp.block_input(streams, n);
-    let out = sublayer(&x);
-    assert_eq!(out.len(), x.len(), "sublayer changed the width: {} vs {}", out.len(), x.len());
-    let residual: Vec<f64> = x.iter().zip(&out).map(|(a, b)| a + b).collect();
-    let next = hp.next_state(streams, &residual, n);
-    (residual, next)
+    // ONE IMPLEMENTATION: `ref_sublayer` is the reference's `hc_mixes` -> `hc_pre` -> sublayer -> `hc_post`.
+    //
+    // THE BUG THIS REPLACES: this function used to compute `residual = x + out` and pass it to `next_state`. That was correct for
+    // the OLD `next_state` (which mixed a collapsed vector) and became a DOUBLE COUNT when `next_state` was rewritten to
+    // `hc_post`, which already adds `comb . state` -- `x` is counted once as part of `residual` and again through `comb`.
+    // The two drivers then disagreed: GLM gave 29585 through `glm53_block0` and 51229 through this path.
+    let next = ref_sublayer(streams, hc_fn, hc_scale, hc_base, n, iters, eps, sublayer);
+    // The caller logs the collapsed sublayer input as the "residual" stream; `ref_sublayer` does not return it, so recompute
+    // the collapse -- it is `hc_pre`, one dot per channel, and keeping it here avoids a second return value in the reference API.
+    let flat: Vec<f64> = streams.iter().flatten().copied().collect();
+    let m = ref_mixes(&flat, hc_fn, hc_scale, hc_base, n, iters, eps);
+    let d = streams[0].len();
+    let xin: Vec<f64> = (0..d).map(|c| (0..n).map(|j| m.pre[j] * streams[j][c]).sum()).collect();
+    (xin, next)
 }
 
 
@@ -693,18 +680,22 @@ where
         let (res, next) = sublayer(&f, &base, &scale, &streams, n, 20, 1e-8, |x| x.to_vec());
         let hp = Params::predict(&f, &base, &scale, &streams, n, 20, 1e-8);
         let expect = hp.block_input(&streams, n);
-        // THE RESIDUAL IS x + SUBLAYER(x), so an IDENTITY sublayer gives 2x -- my first version of this test asserted x,
-        // and the failure was the test's premise, not the code's behaviour.
+        // THE REFERENCE DOES NOT ADD `x + sublayer(x)`. `sublayer` returns `hc_pre`'s collapse, `sum_j pre[j]*x[j]`, and the
+        // streams advance by `hc_post` = `post[i]*out + sum_j comb[i][j]*x[j]`. This assertion used to read "an IDENTITY
+        // sublayer gives 2x" -- which was the OLD, double-counting behaviour, and it is what let the two drivers disagree
+        // (GLM 29585 via `glm53_block0` vs 51229 via this path).
         for i in 0..d {
-            assert!((res[i] - 2.0 * expect[i]).abs() < 1e-12, "identity sublayer did not give 2x at {i}");
+            assert!((res[i] - expect[i]).abs() < 1e-12, "the returned residual must be hc_pre's collapse at {i}");
         }
         assert!(res.iter().all(|v| v.is_finite()));
         let moved = next.iter().zip(&streams).any(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > 1e-9));
         assert!(moved, "the streams did not advance -- next_state was not applied");
 
         // a sublayer that doubles its input must change the residual, or the residual add is missing
-        let (res2, _) = sublayer(&f, &base, &scale, &streams, n, 20, 1e-8, |x| x.iter().map(|v| v * 2.0).collect());
-        assert!(res2.iter().zip(&res).any(|(a, b)| (a - b).abs() > 1e-9), "the residual add is missing");
+        // a sublayer that doubles its input must change the STREAMS -- `post[i]*out` is the only place `out` enters
+        let (_, next2) = sublayer(&f, &base, &scale, &streams, n, 20, 1e-8, |x| x.iter().map(|v| v * 2.0).collect());
+        assert!(next2.iter().zip(&next).any(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > 1e-9)),
+                "a different sublayer must change the next state");
     }
 
 mod tests {
