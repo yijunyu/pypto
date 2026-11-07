@@ -46,6 +46,20 @@ fn main() -> anyhow::Result<()> {
     let token: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(1000);
     let max_layers: usize = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(43);
     let pkg = Package::open(&dir)?;
+    // THE LEARNED HEAD COLLAPSE'S WEIGHTS. `hc_head_fn/base/scale` are in the package (24 non-layer hc tensors); the DS4 path
+    // called `hc_mean_collapse`, a plain average, and the module that owns it says so in its own docstring. Loaded here, with
+    // the mean as the fallback so a checkpoint without them still runs.
+    let hc_head = (|| -> anyhow::Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+        Ok((
+            pkg.f32_tensor("hc_head_fn")?,
+            pkg.f32_tensor("hc_head_base")?,
+            pkg.f32_tensor("hc_head_scale")?,
+        ))
+    })();
+    match &hc_head {
+        Ok((f, b, sc)) => println!("head collapse: LEARNED (hc_head_fn {} values, base {}, scale {})", f.len(), b.len(), sc.len()),
+        Err(e) => println!("head collapse: PLAIN MEAN -- the learned weights are not loadable ({e})"),
+    }
     let views = PackageViews::new(&pkg);
 
     let d = 4096usize; let n_hc = 4usize; let heads = 64usize; let hd = 512usize;
@@ -84,7 +98,12 @@ fn main() -> anyhow::Result<()> {
         // THE COLLAPSE, not slot 0. The engine's prefix collapses all `n_hc` slots internally; the
         // q/kv projections the caller computes must see the SAME collapsed hidden state, or the two
         // halves of the attention block disagree about what the token is.
-        let collapsed = engine_core::decode_step::hc_mean_collapse(&cur_hc, n_hc, d);
+        let collapsed = match &hc_head {
+            Ok((f, b, sc)) => engine_core::hyper_connection::head_collapse(
+                &cur_hc.iter().map(|v| *v as f64).collect::<Vec<_>>(), f, b, sc, n_hc, d, 1e-6)
+                .into_iter().map(|v| v as f32).collect(),
+            Err(_) => engine_core::decode_step::hc_mean_collapse(&cur_hc, n_hc, d),
+        };
         let n = rms_norm(&collapsed, &gamma, 1e-6);
         let wq_a = pkg.dequant_tensor(&format!("{p}.attn.wq_a.weight"))?;
         let qn = pkg.f32_tensor(&format!("{p}.attn.q_norm.weight"))?;
@@ -146,7 +165,12 @@ fn main() -> anyhow::Result<()> {
 
     // Head: final norm then head.weight, on the first hc slot's collapse.
     let fgn = pkg.f32_tensor("norm.weight")?;
-    let collapsed_final = engine_core::decode_step::hc_mean_collapse(&cur_hc, n_hc, d);
+    let collapsed_final = match &hc_head {
+        Ok((f, b, sc)) => engine_core::hyper_connection::head_collapse(
+            &cur_hc.iter().map(|v| *v as f64).collect::<Vec<_>>(), f, b, sc, n_hc, d, 1e-6)
+            .into_iter().map(|v| v as f32).collect(),
+        Err(_) => engine_core::decode_step::hc_mean_collapse(&cur_hc, n_hc, d),
+    };
     let hf = rms_norm(&collapsed_final, &fgn, 1e-6);
     let head = pkg.f32_tensor("head.weight")?;
     let logits = matvec(&head, &hf, vocab);
