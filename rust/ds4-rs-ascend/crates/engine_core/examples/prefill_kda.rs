@@ -102,7 +102,26 @@ fn mla_block_n(g: &ShardedGguf, b: usize, c: &Ctx, xs: &[Vec<f64>]) -> anyhow::R
 fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], blocks: usize, xs: Vec<Vec<f64>>, scale: f64) -> anyhow::Result<Vec<Vec<f64>>> {
     let n = xs.len();
     let mut x = xs;
+    // HYPER-CONNECTIONS, the same state decode carries (B14). One token at a time, because `hc_attn_fn` is [4*d, 24]: it is
+    // predicted from a FLATTENED 4-stream state of width d, so flattening across TOKENS as well would give [4*n*d, 24] and
+    // `Params::predict` refuses it. That is why this is per token and not one call for the batch.
+    let hc_n: usize = if std::env::var_os("GLM53_HC").is_some() { 4 } else { 1 };
+    let mut hc: Vec<Vec<Vec<f64>>> = (0..n).map(|t| vec![x[t].clone(); hc_n]).collect();
+    if hc_n > 1 {
+        println!("hyper-connections: {hc_n} streams x {n} token(s), 20 Sinkhorn iterations");
+    }
     for b in 0..blocks {
+        // THE STREAMS BECOME THE BLOCK'S INPUT.
+        if hc_n > 1 {
+            let f = g.dequant_name(&format!("blk.{b}.hc_attn_fn.weight"))?;
+            let base = g.dequant_name(&format!("blk.{b}.hc_attn_base.weight"))?;
+            let sc = g.dequant_name(&format!("blk.{b}.hc_attn_scale.weight"))?;
+            for t in 0..n {
+                let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &hc[t], hc_n, 20, 1e-8);
+                let bi = hp.block_input(&hc[t], hc_n);
+                x[t].copy_from_slice(&bi);
+            }
+        }
         match plan[b].attn {
             engine_core::glm53_plan::Attn::Mla => {
                 let outs = mla_block_n(g, b, c, &x)?;
@@ -111,6 +130,17 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                     for i in 0..c.d {
                         x[t][i] += outs[t][i];
                     }
+                }
+                if hc_n > 1 {
+                    let f = g.dequant_name(&format!("blk.{b}.hc_attn_fn.weight"))?;
+                    let base = g.dequant_name(&format!("blk.{b}.hc_attn_base.weight"))?;
+                    let sc = g.dequant_name(&format!("blk.{b}.hc_attn_scale.weight"))?;
+                    for t in 0..n {
+                        let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &hc[t], hc_n, 20, 1e-8);
+                        hc[t] = hp.next_state(&hc[t], &x[t], hc_n);
+                    }
+                }
+                for t in 0..n {
                 }
             }
             engine_core::glm53_plan::Attn::Kda => {
