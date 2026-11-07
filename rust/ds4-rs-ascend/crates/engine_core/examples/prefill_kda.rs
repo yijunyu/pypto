@@ -52,8 +52,12 @@ fn mla_block_n(g: &ShardedGguf, b: usize, c: &Ctx, xs: &[Vec<f64>]) -> anyhow::R
     let mut vs = Vec::with_capacity(n);
     for t in 0..n {
         let xin = gated_rms_norm(&xs[t], &nw, &vec![1.0; c.d], c.eps);
-        let qa = mv(&wqa, &xin, c.d, 1536);
-        qs.push(mv(&wqb, &qa, 1536, heads * hd));
+        // THE LATENT IS THE TENSOR'S WIDTH, NOT 1536. Derived so the prefill driver does not carry a GLM constant that
+        // the decode driver had to have removed (round 291) -- the two drivers agree on GLM only because both were right,
+        // and one hardcoded width is all it takes for them to stop agreeing on a second model.
+        let q_lora = wqa.len() / c.d;
+        let qa = mv(&wqa, &xin, c.d, q_lora);
+        qs.push(mv(&wqb, &qa, q_lora, heads * hd));
         let kva = mv(&wkva, &xin, c.d, lat);
         let mut k = vec![0.0f64; heads * hd];
         let mut v = vec![0.0f64; heads * hd];
