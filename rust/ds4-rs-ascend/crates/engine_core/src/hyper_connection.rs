@@ -119,25 +119,28 @@ impl Params {
             .collect();
         // THE LAYOUT IS `4 + 4 + 4*4`, MATRIX LAST: four in-weights, four out-weights, then the sixteen matrix
         // entries. `engine_ascend/src/hc.rs` states it; my first version assumed `16 + 4 + 4`, the reverse.
-        let matrix = sinkhorn(&alpha[2 * n..], n, iters, eps);
-        Params {
-            matrix,
-            w_in: alpha[..n].to_vec(),
-            w_out: alpha[n..2 * n].to_vec(),
-        }
+        // B20: THE REFERENCE'S COEFFICIENTS, into the same three fields so every caller moves together.
+    //   pre  -> w_out   (collapses the streams: `block_input`)
+    //   post -> w_in    (scales the sublayer output: `next_state`)
+    //   comb -> matrix  (mixes the residual: `next_state`)
+    // `ref_mixes` owns the formula; this is the adapter that keeps `Params`' shape.
+    let m = ref_mixes(&flat, hc_fn, scale, hc_base, n, iters, eps);
+    Params {
+        matrix: m.comb,
+        w_in: m.post,
+        w_out: m.pre,
     }
+}
 
     /// The block's input: the streams mixed by the matrix, then by `w_in`.
     pub fn block_input(&self, state: &[Vec<f64>], n: usize) -> Vec<f64> {
-        // ONE stream's width: the mixing happens per CHANNEL across streams.
+        // `hc_pre`: sum_j pre[j] * state[j], with pre = `w_out`. THIS IS THE REFERENCE'S COLLAPSE, not a sinkhorn mix.
         let d = state[0].len();
         let mut out = vec![0.0f64; d];
-        for i in 0..n {
-            for j in 0..n {
-                let w = self.matrix[i * n + j] + self.w_in[i];
-                for c in 0..d {
-                    out[c] += w * state[j][c];
-                }
+        for j in 0..n {
+            let w = self.w_out[j];
+            for c in 0..d {
+                out[c] += w * state[j][c];
             }
         }
         out
@@ -145,24 +148,15 @@ impl Params {
 
     /// The next state: each stream takes the block's output through `w_in[i]`, mixed by the matrix.
     pub fn next_state(&self, state: &[Vec<f64>], block_out: &[f64], n: usize) -> Vec<Vec<f64>> {
-        // THE PREDICTION SEES ALL STREAMS, NOT ONE. `hc_attn_fn` is [16384, 24] and 16384 = 4 streams x 4096, so the
-        // matrix is predicted from the FLATTENED state. Taking `state[0].len()` (= 4096) made the assert report
-        // "must be [4096, 24]" against a 393216-value tensor, which is how this was found.
-        // ONE stream's width: this mixes ACROSS streams, per channel, so the per-stream length is the loop bound.
+        // `hc_post`: each copy is `post[i]*block_out + sum_j comb[i][j]*state[j]`, with post = `w_in` and comb = `matrix`.
         let d = state[0].len();
-        let mut next = vec![vec![0.0f64; d]; n];
-        for i in 0..n {
-            for j in 0..n {
-                let w = self.matrix[i * n + j];
-                for c in 0..d {
-                    next[i][c] += w * state[j][c];
-                }
-            }
-            for c in 0..d {
-                next[i][c] += self.w_in[i] * block_out[c];
-            }
-        }
-        next
+        (0..n)
+            .map(|i| {
+                (0..d)
+                    .map(|c| self.w_in[i] * block_out[c] + (0..n).map(|j| self.matrix[i * n + j] * state[j][c]).sum::<f64>())
+                    .collect()
+            })
+            .collect()
     }
 }
 
