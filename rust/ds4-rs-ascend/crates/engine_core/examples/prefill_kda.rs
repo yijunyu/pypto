@@ -136,26 +136,36 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
         }
         match plan[b].attn {
             engine_core::glm53_plan::Attn::Mla => {
-                let outs = mla_block_n(g, b, c, &x)?;
-                println!("MLA-TENSOR prefill blk{b}: {:?}", &outs[0][..3]);
-                for t in 0..n {
-                    for i in 0..c.d {
-                        x[t][i] += outs[t][i];
-                    }
-                }
+                // B22: THE ATTENTION MUST RUN ON `hc_pre(streams)`, NOT ON `x`. The old version called `mla_block_n` on `x`
+                // first and then advanced the streams with a ZERO sublayer output, so `hc_post`'s `post` term was multiplied
+                // by zero and `comb` mixed the residual forward alone. Reference order: hc_pre -> attention -> hc_post.
                 if hc_n > 1 {
                     let f = g.dequant_name(&format!("blk.{b}.hc_attn_fn.weight"))?;
                     let base = g.dequant_name(&format!("blk.{b}.hc_attn_base.weight"))?;
                     let sc = g.dequant_name(&format!("blk.{b}.hc_attn_scale.weight"))?;
+                    let mut xin: Vec<Vec<f64>> = Vec::with_capacity(n);
+                    let mut hps = Vec::with_capacity(n);
                     for t in 0..n {
-                        // SUBLAYER: predict -> block_input -> (the sublayer returns the attention OUTPUT) -> residual ->
-                        // next_state. The residual add and the stream advance are inside the call, so this cannot be done
-                        // in the wrong order. `outs[t]` was already added to `x[t]` above; passing it here would double it,
-                        // so the sublayer returns ZERO -- the residual is then x itself, which is what the loop meant.
-                        let (xr, next) = engine_core::hyper_connection::sublayer(
-                            &f, &base, &sc, &hc[t], hc_n, 20, 1e-8, |_| vec![0.0f64; c.d]);
-                        x[t].copy_from_slice(&xr);
+                        let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &hc[t], hc_n, 20, 1e-8);
+                        xin.push(hp.block_input(&hc[t], hc_n));
+                        hps.push(hp);
+                    }
+                    let outs = mla_block_n(g, b, c, &xin)?;
+                    println!("MLA-TENSOR prefill blk{b}: {:?}", &outs[0][..3]);
+                    for t in 0..n {
+                        // hc_post takes the attention OUTPUT; then `x[t]` is the collapse of the NEW streams, for the FFN
+                        let next = hps[t].next_state(&hc[t], &outs[t], hc_n);
+                        let hp2 = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &next, hc_n, 20, 1e-8);
+                        x[t].copy_from_slice(&hp2.block_input(&next, hc_n));
                         hc[t] = next;
+                    }
+                } else {
+                    let outs = mla_block_n(g, b, c, &x)?;
+                    println!("MLA-TENSOR prefill blk{b}: {:?}", &outs[0][..3]);
+                    for t in 0..n {
+                        for i in 0..c.d {
+                            x[t][i] += outs[t][i];
+                        }
                     }
                 }
                 for t in 0..n {

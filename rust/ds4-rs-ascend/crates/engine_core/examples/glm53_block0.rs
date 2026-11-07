@@ -302,6 +302,18 @@ fn main() -> anyhow::Result<()> {
             // THE FFN IS NOT OPTIONAL ON AN MLA BLOCK. `continue` used to skip straight to the next block, so every
             // MLA block ran its attention and NOT its feed-forward -- which is why this driver and the prefill driver
             // disagreed by 40x on the logit. The `continue` was written to skip the KDA code below, not the FFN.
+            // B22: THE MLA FFN HAD NO HYPER-CONNECTION EITHER -- the same wrap as the KDA branch, the same differencing trick.
+            let mut ffn_hp = None;
+            let mut ffn_x0: Vec<f64> = Vec::new();
+            if hc_n > 1 {
+                let f = g.dequant_name(&format!("blk.{b}.hc_ffn_fn.weight"))?;
+                let base = g.dequant_name(&format!("blk.{b}.hc_ffn_base.weight"))?;
+                let sc = g.dequant_name(&format!("blk.{b}.hc_ffn_scale.weight"))?;
+                let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &streams, hc_n, hc_iters, hc_eps);
+                x = hp.block_input(&streams, hc_n);
+                ffn_x0 = x.clone();
+                ffn_hp = Some(hp);
+            }
             match plan[b].ffn {
                 engine_core::glm53_plan::Ffn::Dense => {
                     let fnorm_w = g.dequant_name(&format!("blk.{b}.ffn_norm.weight"))?;
@@ -326,6 +338,10 @@ fn main() -> anyhow::Result<()> {
                     moe_used = used;
                 }
                 engine_core::glm53_plan::Ffn::None => {}
+            }
+            if let Some(hp) = ffn_hp {
+                let ffn_out: Vec<f64> = x.iter().zip(&ffn_x0).map(|(a, b)| a - b).collect();
+                streams = hp.next_state(&streams, &ffn_out, hc_n);
             }
             continue;
         }
