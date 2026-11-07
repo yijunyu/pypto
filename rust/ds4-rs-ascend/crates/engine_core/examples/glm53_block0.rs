@@ -291,7 +291,9 @@ fn main() -> anyhow::Result<()> {
                 let base = g.dequant_name(&format!("blk.{b}.hc_attn_base.weight"))?;
                 let sc = g.dequant_name(&format!("blk.{b}.hc_attn_scale.weight"))?;
                 let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &streams, hc_n, hc_iters, hc_eps);
-                streams = hp.next_state(&streams, &x, hc_n);
+                // `next_state` IS `hc_post`: `post[i]*block_out + sum_j comb[i][j]*state[j]`. Passing `x` here -- which is
+                // already `xin + op` -- counts `xin` a SECOND time through `comb`. The block output is `op`.
+                streams = hp.next_state(&streams, &op, hc_n);
             }
             let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
             println!("block {b}: MLA, rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
