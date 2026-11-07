@@ -244,7 +244,87 @@ pub fn head_collapse(inp_hc: &[f64], fn_w: &[f32], base: &[f32], scale: &[f32], 
         .collect()
 }
 
+
+/// THE REFERENCE'S HYPER-CONNECTION, transcribed from `/data0/DeepSeek-V4.1-Flash/inference`:
+/// `model.py:927` (`hc_mixes`) and `kernel.py:426-443` (`hc_split_sinkhorn_kernel_`).
+///
+/// ```text
+/// mixes     = linear(x_flat, hc_fn) * rsqrt(rms(x_flat) + eps)      -- NO bias, and the rsqrt NORMALISES
+/// pre[j]    = sigmoid(mixes[j]          * hc_scale[0] + hc_base[j])         + eps
+/// post[j]   = 2 * sigmoid(mixes[j + n]  * hc_scale[1] + hc_base[j + n])
+/// comb[j,k] = softmax_k(mixes[j*n + k + 2n] * hc_scale[2] + hc_base[j*n + k + 2n])
+/// comb      = sinkhorn(comb, iters, eps)
+/// ```
+///
+/// The engine's `Params::predict` differs in FIVE places: no `rsqrt`, `hc_base` added inside the projection instead of inside
+/// the sigmoid, no `pre`, no `+eps`, `2*` or `softmax`, and `sinkhorn` applied to the raw mixes rather than to `comb`.
+pub struct RefMixes {
+    pub pre: Vec<f64>,
+    pub post: Vec<f64>,
+    pub comb: Vec<f64>,
+}
+
+pub fn ref_mixes(x_flat: &[f64], hc_fn: &[f32], hc_scale: &[f32], hc_base: &[f32], n: usize, iters: usize, eps: f64) -> RefMixes {
+    let hc_dim = x_flat.len();
+    let mix_hc = (2 + n) * n;
+    assert_eq!(hc_fn.len(), mix_hc * hc_dim, "hc_fn must be [mix_hc, hc_dim]");
+    assert!(hc_scale.len() >= 3, "hc_scale is [3]: pre, post, comb");
+    assert_eq!(hc_base.len(), mix_hc, "hc_base is [mix_hc]");
+    // the rsqrt: ONE statistic per token over the whole flattened stream. This is the line the engine does not have.
+    let ms = x_flat.iter().map(|v| v * v).sum::<f64>() / hc_dim as f64;
+    let rsqrt = 1.0 / (ms + eps).sqrt();
+    let mixes: Vec<f64> = (0..mix_hc)
+        .map(|r| (0..hc_dim).map(|c| hc_fn[r * hc_dim + c] as f64 * x_flat[c]).sum::<f64>() * rsqrt)
+        .collect();
+    let sig = |z: f64| 1.0 / (1.0 + (-z).exp());
+    let pre: Vec<f64> = (0..n).map(|j| sig(mixes[j] * hc_scale[0] as f64 + hc_base[j] as f64) + eps).collect();
+    let post: Vec<f64> = (0..n).map(|j| 2.0 * sig(mixes[j + n] * hc_scale[1] as f64 + hc_base[j + n] as f64)).collect();
+    let mut comb: Vec<f64> = (0..n * n)
+        .map(|jk| mixes[jk + 2 * n] * hc_scale[2] as f64 + hc_base[jk + 2 * n] as f64)
+        .collect();
+    // comb = comb.softmax(-1) + eps, then sinkhorn
+    for j in 0..n {
+        let row = &mut comb[j * n..j * n + n];
+        let m = row.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let mut sum = 0.0;
+        for v in row.iter_mut() { *v = (*v - m).exp(); sum += *v; }
+        for v in row.iter_mut() { *v = *v / sum + eps; }
+    }
+    RefMixes { pre, post, comb: sinkhorn(&comb, n, iters, eps) }
+}
+
 #[cfg(test)]
+    /// THE FIVE DIFFERENCES FROM `Params::predict`, each asserted against a property the reference's kernel guarantees:
+    ///   pre in (eps, 1+eps), post in (0, 2), comb rows sum to 1 (sinkhorn), and the rsqrt making the mixes SCALE-INVARIANT.
+    #[test]
+    fn ref_mixes_matches_the_references_guarantees() {
+        let (n, d) = (4usize, 12usize);
+        let hc_dim = n * d;
+        let mix_hc = (2 + n) * n; // 24
+        let hc_fn: Vec<f32> = (0..mix_hc * hc_dim).map(|i| ((i * 7 % 13) as f32 - 6.0) * 0.03).collect();
+        let base: Vec<f32> = (0..mix_hc).map(|i| ((i * 5 % 11) as f32 - 5.0) * 0.2).collect();
+        let scale = vec![0.9f32, 1.1, 0.7];
+        let x: Vec<f64> = (0..hc_dim).map(|i| ((i * 3 % 17) as f64 - 8.0) * 0.11).collect();
+
+        let m = ref_mixes(&x, &hc_fn, &scale, &base, n, 20, 1e-6);
+        assert_eq!((m.pre.len(), m.post.len(), m.comb.len()), (n, n, n * n));
+        for &v in &m.pre { assert!(v > 1e-6 && v < 1.0 + 1e-6, "pre must be sigmoid+eps in (eps, 1+eps), got {v}"); }
+        for &v in &m.post { assert!(v > 0.0 && v < 2.0, "post must be 2*sigmoid in (0, 2), got {v}"); }
+        for j in 0..n {
+            let row: f64 = m.comb[j * n..j * n + n].iter().sum();
+            assert!((row - 1.0).abs() < 1e-6, "each comb row must sum to 1 after sinkhorn, got {row}");
+        }
+
+        // THE rsqrt: scaling x by 4 must leave the mixes -- and therefore pre/post/comb -- ALMOST unchanged, because the
+        // mixes are a function of the NORMALISED state. Without the rsqrt they would scale by 4.
+        let x4: Vec<f64> = x.iter().map(|v| v * 4.0).collect();
+        let m4 = ref_mixes(&x4, &hc_fn, &scale, &base, n, 20, 1e-6);
+        for j in 0..n {
+            assert!((m.pre[j] - m4.pre[j]).abs() < 1e-6, "pre must be scale-invariant at {j}");
+            assert!((m.post[j] - m4.post[j]).abs() < 1e-6, "post must be scale-invariant at {j}");
+        }
+    }
+
     /// `Params::predict` ON THE REAL LAYER-0 TENSORS.
     ///
     /// `/tmp/hc_layer_raw.bin` is 3,145,944 bytes: `hc_attn_fn [24,16384]`, `hc_attn_base [24]`, `hc_attn_scale [3]`,
