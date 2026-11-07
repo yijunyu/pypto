@@ -166,7 +166,71 @@ impl Params {
     }
 }
 
+
+/// ONE SUBLAYER AROUND THE LEARNED MIXING: input <- mixing streams, run the sublayer, streams <- mixing of the result.
+///
+/// This is the shape `model.py` gives every block -- `hc_attn_*` around attention and `hc_ffn_*` around the FFN/MoE -- and
+/// the shape the DS4 decode path does NOT implement: it carries `n_hc` copies and averages them (`hc_mean_collapse`), which
+/// is the reference's *plain* collapse, not its learned one.
+///
+/// `sublayer` receives the mixed block input and returns the sublayer's output (before the residual). The residual is added
+/// here, and the streams are advanced with `next_state`, so a caller cannot get the order wrong.
+pub fn sublayer<F>(
+    hc_fn: &[f32],
+    hc_base: &[f32],
+    hc_scale: &[f32],
+    streams: &[Vec<f64>],
+    n: usize,
+    iters: usize,
+    eps: f64,
+    sublayer: F,
+) -> (Vec<f64>, Vec<Vec<f64>>)
+where
+    F: FnOnce(&[f64]) -> Vec<f64>,
+{
+    let hp = Params::predict(hc_fn, hc_base, hc_scale, streams, n, iters, eps);
+    let x = hp.block_input(streams, n);
+    let out = sublayer(&x);
+    assert_eq!(out.len(), x.len(), "sublayer changed the width: {} vs {}", out.len(), x.len());
+    let residual: Vec<f64> = x.iter().zip(&out).map(|(a, b)| a + b).collect();
+    let next = hp.next_state(streams, &residual, n);
+    (residual, next)
+}
+
 #[cfg(test)]
+    /// THE SUBLAYER SHAPE, and the two things it must get right: the streams ADVANCE, and an identity sublayer leaves the
+    /// residual equal to the block input.
+    #[test]
+    fn a_sublayer_mixes_in_and_mixes_out() {
+        let (n, d) = (4usize, 6usize); // 4 streams of width 6
+        let mut seed = 0x2545F4914F6CDD1Du64;
+        let mut rnd = |m: f64| {
+            seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+            ((seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * m
+        };
+        let f: Vec<f32> = (0..((2 * n + n * n) * n * d)).map(|_| rnd(0.3) as f32).collect(); // [2n+n^2, n*d]
+        let base: Vec<f32> = (0..(2 * n + n * n)).map(|_| rnd(0.2) as f32).collect();
+        let scale: Vec<f32> = (0..(2 * n + n * n)).map(|_| rnd(0.1) as f32).collect();
+        let streams: Vec<Vec<f64>> = (0..n).map(|_| (0..d).map(|_| rnd(1.0)).collect()).collect();
+
+        // identity sublayer: the residual is the block input, and the streams must have MOVED
+        let (res, next) = sublayer(&f, &base, &scale, &streams, n, 20, 1e-8, |x| x.to_vec());
+        let hp = Params::predict(&f, &base, &scale, &streams, n, 20, 1e-8);
+        let expect = hp.block_input(&streams, n);
+        // THE RESIDUAL IS x + SUBLAYER(x), so an IDENTITY sublayer gives 2x -- my first version of this test asserted x,
+        // and the failure was the test's premise, not the code's behaviour.
+        for i in 0..d {
+            assert!((res[i] - 2.0 * expect[i]).abs() < 1e-12, "identity sublayer did not give 2x at {i}");
+        }
+        assert!(res.iter().all(|v| v.is_finite()));
+        let moved = next.iter().zip(&streams).any(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > 1e-9));
+        assert!(moved, "the streams did not advance -- next_state was not applied");
+
+        // a sublayer that doubles its input must change the residual, or the residual add is missing
+        let (res2, _) = sublayer(&f, &base, &scale, &streams, n, 20, 1e-8, |x| x.iter().map(|v| v * 2.0).collect());
+        assert!(res2.iter().zip(&res).any(|(a, b)| (a - b).abs() > 1e-9), "the residual add is missing");
+    }
+
 mod tests {
     use super::*;
 
