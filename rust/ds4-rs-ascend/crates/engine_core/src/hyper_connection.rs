@@ -245,6 +245,52 @@ pub fn head_collapse(inp_hc: &[f64], fn_w: &[f32], base: &[f32], scale: &[f32], 
 }
 
 #[cfg(test)]
+    /// `Params::predict` ON THE REAL LAYER-0 TENSORS.
+    ///
+    /// `/tmp/hc_layer_raw.bin` is 3,145,944 bytes: `hc_attn_fn [24,16384]`, `hc_attn_base [24]`, `hc_attn_scale [3]`,
+    /// `hc_ffn_fn [24,16384]`, `hc_ffn_base [24]`, `hc_ffn_scale [3]`, raw f32 in that order -- 65,536 + 24 + 3 each, twice.
+    ///
+    /// The asserts inside `predict` are the contract, and with the checkpoint's own tensors they are the checkpoint's
+    /// contract rather than mine. **Three scales, not 24** -- which is the fact a fixture would have guessed wrong.
+    #[test]
+    fn predict_satisfies_the_real_layer_tensors() {
+        let path = std::path::Path::new("/tmp/hc_layer_raw.bin");
+        if !path.exists() {
+            eprintln!("SKIP: /tmp/hc_layer_raw.bin is not present (the real layer-0 hc_* tensors)");
+            return;
+        }
+        let raw = std::fs::read(path).unwrap();
+        let all = bytes_to_f32(&raw);
+        let (n, d) = (4usize, 4096usize);
+        let n_params = 2 * n + n * n; // 24
+        let fn_len = n_params * n * d; // 24 x 16384 = 393,216
+        let per_half = fn_len + n_params + 3;
+        assert_eq!(all.len(), 2 * per_half, "fixture is attn then ffn, each [24,16384]+[24]+[3]");
+
+        for (label, base_off) in [("attn", 0usize), ("ffn", per_half)] {
+            let f = &all[base_off..base_off + fn_len];
+            let base = &all[base_off + fn_len..base_off + fn_len + n_params];
+            let scale = &all[base_off + fn_len + n_params..base_off + per_half];
+            assert_eq!(f.len(), fn_len, "{label}: hc_fn is [24, 16384]");
+            assert_eq!(base.len(), n_params, "{label}: hc_base is [24]");
+            assert_eq!(scale.len(), 3, "{label}: hc_scale is [3] -- [matrix, in, out], NOT 24");
+
+            let streams: Vec<Vec<f64>> = (0..n)
+                .map(|h| (0..d).map(|c| ((h * d + c) as f64 * 1e-3).sin()).collect())
+                .collect();
+            let hp = Params::predict(f, base, scale, &streams, n, 20, 1e-6);
+            let x = hp.block_input(&streams, n);
+            assert_eq!(x.len(), d, "{label}: block_input is one stream wide");
+            assert!(x.iter().all(|v| v.is_finite()), "{label}: non-finite block input");
+            let next = hp.next_state(&streams, &x, n);
+            assert_eq!(next.len(), n);
+            assert!(next.iter().all(|r| r.len() == d && r.iter().all(|v| v.is_finite())), "{label}: bad next state");
+            // the streams must actually MOVE under real weights
+            let moved = next.iter().zip(&streams).any(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > 1e-12));
+            assert!(moved, "{label}: the real weights left the streams unchanged");
+        }
+    }
+
     fn bytes_to_f32(raw: &[u8]) -> Vec<f32> {
         raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
     }
