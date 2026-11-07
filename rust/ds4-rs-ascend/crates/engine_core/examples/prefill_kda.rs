@@ -42,15 +42,15 @@ fn mla_block_n(g: &ShardedGguf, b: usize, c: &Ctx, xs: &[Vec<f64>]) -> anyhow::R
     let mv = |w: &[f32], xv: &[f64], k: usize, nn: usize| -> Vec<f64> {
         (0..nn).map(|r| (0..k).map(|cc| w[r * k + cc] as f64 * xv[cc]).sum()).collect()
     };
-    let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
+    let norm_w = engine_core::model_names::dequant_any(g, b, "norm")?;
     let nw: Vec<f64> = norm_w.iter().map(|v| *v as f64).collect();
-    let wqa = g.dequant_name(&format!("blk.{b}.attn_q_a.weight"))?;
-    let wqb = g.dequant_name(&format!("blk.{b}.attn_q_b.weight"))?;
-    let wkva = g.dequant_name(&format!("blk.{b}.attn_kv_a_mqa.weight"))?;
-    let wkb = g.dequant_name(&format!("blk.{b}.attn_k_b.weight"))?;
-    let wvb = g.dequant_name(&format!("blk.{b}.attn_v_b.weight"))?;
-    let wo = g.dequant_name(&format!("blk.{b}.attn_output.weight"))?;
-    let lat = g.dequant_name(&format!("blk.{b}.attn_kv_a_norm.weight"))?.len();
+    let wqa = engine_core::model_names::dequant_any(g, b, "q_a")?;
+    let wqb = engine_core::model_names::dequant_any(g, b, "q_b")?;
+    let wkva = engine_core::model_names::dequant_any(g, b, "kv_a_mqa")?;
+    let wkb = engine_core::model_names::dequant_any(g, b, "k_b")?;
+    let wvb = engine_core::model_names::dequant_any(g, b, "v_b")?;
+    let wo = engine_core::model_names::dequant_any(g, b, "output")?;
+    let lat = engine_core::model_names::dequant_any(g, b, "kv_a_norm")?.len();
     anyhow::ensure!(wkb.len() % (lat * heads) == 0, "k_b is {} not {lat} x hd x {heads}", wkb.len());
     let hd = wkb.len() / (lat * heads);
     let mut qs = Vec::with_capacity(n);
@@ -150,7 +150,7 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                 }
             }
             engine_core::glm53_plan::Attn::Kda => {
-                let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
+                let norm_w = engine_core::model_names::dequant_any(g, b, "norm")?;
                 let nw: Vec<f64> = norm_w.iter().map(|v| *v as f64).collect();
                 let mut q = Vec::with_capacity(n);
                 let mut k = Vec::with_capacity(n);
@@ -165,8 +165,8 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                             .collect::<Vec<f64>>());
                     }
                     // THE REAL f-GATE per position: dt = f_b(f_a(normed x)) + dt_bias
-                    let fa = g.dequant_name(&format!("blk.{b}.kda_f_a.weight"))?;
-                    let fb = g.dequant_name(&format!("blk.{b}.kda_f_b.weight"))?;
+                    let fa = engine_core::model_names::dequant_any(g, b, "f_a")?;
+                    let fb = engine_core::model_names::dequant_any(g, b, "f_b")?;
                     let hid: Vec<f64> = (0..128).map(|r| (0..c.d).map(|cc| fa[r * c.d + cc] as f64 * xin[cc]).sum()).collect();
                     gate.push((0..c.heads * c.head_dim)
                         .map(|r| (0..128).map(|cc| fb[r * 128 + cc] as f64 * hid[cc]).sum())
@@ -177,7 +177,7 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                     // THE REAL CONSTANTS, the same ones the decode example loads: a_log per head.
                     heads: c.heads, head_dim: c.head_dim,
                     a_log: {
-                        let raw = g.dequant_name(&format!("blk.{b}.kda_a_log.weight"))?;
+                        let raw = engine_core::model_names::dequant_any(g, b, "a_log")?;
                         anyhow::ensure!(raw.len() == c.heads, "kda_a_log is {} not {}", raw.len(), c.heads);
                         raw.iter().map(|v| *v as f64).collect()
                     },
@@ -187,13 +187,13 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
             conv_k: load_conv(g, b, "kda_k_conv", c.heads * c.head_dim)?,
             conv_v: load_conv(g, b, "kda_v_conv", c.heads * c.head_dim)?,
                     dt_bias: {
-                        let raw = g.dequant_name(&format!("blk.{b}.kda_dt_bias.weight"))?;
+                        let raw = engine_core::model_names::dequant_any(g, b, "dt_bias")?;
                         raw.iter().map(|v| *v as f64).collect()
                     },
                     // THE REAL beta, as a per-head projection of the FIRST position's input (the decode path's
                     // reading), and the real output gate for the block.
                     beta: {
-                        let raw = g.dequant_name(&format!("blk.{b}.kda_beta.weight"))?;
+                        let raw = engine_core::model_names::dequant_any(g, b, "beta")?;
                         let xin0 = gated_rms_norm(&x[0], &nw, &vec![1.0; c.d], c.eps);
                         (0..c.heads)
                             .map(|h| {
@@ -209,8 +209,8 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                 let onw = vec![1.0f64; c.head_dim];
                 let ogate = {
                     // THE REAL output gate per position
-                    let ga = g.dequant_name(&format!("blk.{b}.kda_g_a.weight"))?;
-                    let gb = g.dequant_name(&format!("blk.{b}.kda_g_b.weight"))?;
+                    let ga = engine_core::model_names::dequant_any(g, b, "g_a")?;
+                    let gb = engine_core::model_names::dequant_any(g, b, "g_b")?;
                     let mut v = Vec::with_capacity(n * c.heads * c.head_dim);
                     for t in 0..n {
                         let xin = gated_rms_norm(&x[t], &nw, &vec![1.0; c.d], c.eps);
@@ -228,7 +228,7 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                         x[0][0], xinp[0], q[0][0], params.beta[0]);
                 }
                 let out = block(&params, &flat(&q), &flat(&k), &flat(&v), &flat(&gate), n, &onw, &ogate);
-                let wo = g.dequant_name(&format!("blk.{b}.kda_output.weight"))?;
+                let wo = engine_core::model_names::dequant_any(g, b, "output")?;
                 for t in 0..n {
                     let o = &out[t * c.heads * c.head_dim..(t + 1) * c.heads * c.head_dim];
                     for r in 0..c.d {
@@ -288,12 +288,64 @@ fn load_conv(g: &ShardedGguf, b: usize, which: &str, channels: usize) -> anyhow:
 fn main() -> anyhow::Result<()> {
     let path = PathBuf::from(std::env::args().nth(1).ok_or_else(|| anyhow::anyhow!("usage: prefill_kda <gguf>"))?);
     let g0 = GgufFile::open(&path)?;
-    let cfg = DefaultsGlm5::from_gguf(&g0)?;
-    let plan = schedule(&g0)?;
+    // THE KIMI CONFIG PATH. Without it the prefill cannot open Kimi at all ("missing indexer.head_count"), which is why the
+    // campaign's cross-check was GLM-only and Kimi's tokens came from a single implementation (B15).
+    let cfg = if std::env::var_os("DS4_KIMI").is_some() {
+        let u = |suffix: &str| -> u32 {
+            g0.meta.iter().find(|(k, _)| k.ends_with(suffix))
+                .and_then(|(_, v)| match v { engine_core::gguf::MetaValue::U32(x) => Some(*x), _ => None })
+                .unwrap_or(0)
+        };
+        let f = |suffix: &str| -> f32 {
+            g0.meta.iter().find(|(k, _)| k.ends_with(suffix))
+                .and_then(|(_, v)| match v { engine_core::gguf::MetaValue::F32(x) => Some(*x), _ => None })
+                .unwrap_or(1e-5)
+        };
+        let mut hidden = 0usize;
+        for pp in std::iter::once(&path).chain(std::env::args().skip(2).map(std::path::PathBuf::from).collect::<Vec<_>>().iter()) {
+            if let Ok(gf) = GgufFile::open(pp) {
+                if let Some(t) = gf.tensors.iter().find(|t| t.name == "token_embd.weight") {
+                    hidden = t.dims.first().copied().unwrap_or(0) as usize;
+                    break;
+                }
+            }
+        }
+        println!("kimi config: {} blocks, {} heads, hidden {}", u("block_count"), u("attention.head_count"), hidden);
+        DefaultsGlm5 {
+            hidden_size: hidden,
+            rms_norm_eps: f("attention.layer_norm_rms_epsilon"),
+            vocab_size: u("vocab_size") as usize,
+            num_hidden_layers: u("block_count") as usize,
+            ..DefaultsGlm5::from_gguf(&GgufFile::open(std::path::Path::new("/Volumes/Data/models/glm-5.3-flash-gguf/GLM-5.3-Flash-Q2.gguf"))?)?
+        }
+    } else {
+        DefaultsGlm5::from_gguf(&g0)?
+    };
+    // THE SCHEDULE COMES FROM THE MERGED TENSOR TABLE, not from the first path: Kimi's shard 1 carries the metadata and NO
+    // tensors, so reading it alone said "no blk.<n>.* tensors" -- the same bug the decode driver had in iteration 280.
+    let merged: Vec<engine_core::gguf::TensorInfo> = std::iter::once(path.clone())
+        .chain(std::env::args().skip(2).map(std::path::PathBuf::from))
+        .filter_map(|pp| GgufFile::open(&pp).ok())
+        .flat_map(|gf| gf.tensors)
+        .collect();
+    println!("merged {} tensors for the schedule", merged.len());
+    let plan = engine_core::glm53_plan::schedule_of(&merged)?;
     let expert_scale = engine_core::glm53_ffn::expert_weights_scale(&g0)?;
     println!("expert_weights_scale = {expert_scale} (read from the file)");
     let v = Vocab::from_gguf(&g0)?;
-    let g = ShardedGguf::open(&path)?;
+    // THE SHARD LIST IS WHATEVER WAS GIVEN, not a directory scan: `ShardedGguf::open` insists on all 14 Kimi shards
+    // ("missing shard 00010, split.count=14") while 10 are present and blocks 0-61 are complete. `open_paths` is what the
+    // decode driver has used since iteration 279.
+    let g = {
+        let extra: Vec<std::path::PathBuf> = std::env::args().skip(2).map(std::path::PathBuf::from).collect();
+        if extra.is_empty() {
+            ShardedGguf::open(&path)?
+        } else {
+            let mut all = vec![path.clone()];
+            all.extend(extra);
+            ShardedGguf::open_paths(&all)?
+        }
+    };
     let c = Ctx { d: cfg.hidden_size, heads: 64, head_dim: 128, eps: cfg.rms_norm_eps as f64 };
     anyhow::ensure!(plan[0].attn == engine_core::glm53_plan::Attn::Kda, "block 0 must be KDA");
 
