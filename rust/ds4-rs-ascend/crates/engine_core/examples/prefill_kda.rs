@@ -26,7 +26,11 @@ fn embed(g: &ShardedGguf, v: &Vocab, tok: u32, d: usize) -> anyhow::Result<Vec<f
     let cols = emb.len() / d;
     let id = tok as usize;
     anyhow::ensure!(id < cols, "token {id} outside the {cols}-wide embedding");
-    Ok((0..d).map(|c| emb[c * cols + id] as f64).collect())
+    let v: Vec<f64> = (0..d).map(|c| emb[c * cols + id] as f64).collect();
+    if std::env::var_os("KDA_INTER").is_some() {
+        println!("EMB prefill: token {id}, d {d}, cols {cols}, len {}, first {:?}", emb.len(), &v[..3]);
+    }
+    Ok(v)
 }
 
 
@@ -375,7 +379,11 @@ fn main() -> anyhow::Result<()> {
     let c = Ctx { d: cfg.hidden_size, heads, head_dim: 128, eps: cfg.rms_norm_eps as f64 };
     anyhow::ensure!(plan[0].attn == engine_core::glm53_plan::Attn::Kda, "block 0 must be KDA");
 
-    let ids = v.encode("Hello world");
+    // THE SAME PROMPT AS THE DECODE DRIVER. This hardcoded "Hello world" while decode reads GLM53_PROMPT (default "Hello"),
+    // so the two drivers embedded DIFFERENT TOKENS -- the prefill id 19180 against decode's 9703 -- and every comparison
+    // between them was comparing different inputs. That is what the "disagreement on Kimi" was.
+    let prompt = std::env::var("GLM53_PROMPT").unwrap_or_else(|_| "Hello".to_string());
+    let ids = v.encode(&prompt);
     println!("prompt -> {ids:?}");
     anyhow::ensure!(ids.len() == 2, "this example wants exactly two tokens, got {}", ids.len());
 

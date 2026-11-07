@@ -225,7 +225,11 @@ fn main() -> anyhow::Result<()> {
             let vocab_cols = emb.len() / d;
             let id = ids[0] as usize;
             anyhow::ensure!(id < vocab_cols, "token {id} is outside the {vocab_cols}-wide embedding");
-            (0..d).map(|c| emb[c * vocab_cols + id] as f64).collect()
+            let v: Vec<f64> = (0..d).map(|c| emb[c * vocab_cols + id] as f64).collect();
+            if std::env::var_os("KDA_INTER").is_some() {
+                println!("EMB decode: token {id}, d {d}, cols {vocab_cols}, first {:?}", &v[..3]);
+            }
+            v
         }
         Err(_) => (0..d).map(|i| ((i % 11) as f64 - 5.0) * 0.01).collect(),
     };
