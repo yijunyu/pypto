@@ -352,6 +352,46 @@ where
 }
 
 #[cfg(test)]
+    /// THE DEFECT, ON REAL WEIGHTS: the reference's mixes are **scale-invariant** because of the `rsqrt`; the engine's
+    /// `Params::predict` is not. This asserts the reference's side with the checkpoint's own `hc_attn_fn`.
+    ///
+    /// It is a POSITIVE assertion (the reference IS invariant), not a test that pins the engine's bug -- when `predict` is
+    /// rewritten to `ref_mixes`, this test keeps passing.
+    #[test]
+    fn ref_mixes_is_scale_invariant_on_the_real_tensors() {
+        let path = std::path::Path::new("/tmp/hc_layer_raw.bin");
+        if !path.exists() {
+            eprintln!("SKIP: /tmp/hc_layer_raw.bin absent -- run tools/fetch_hc_fixtures.sh");
+            return;
+        }
+        let raw = std::fs::read(path).unwrap();
+        let all = bytes_to_f32(&raw);
+        let (n, d) = (4usize, 4096usize);
+        let n_params = 2 * n + n * n;
+        let fn_len = n_params * n * d;
+        let per_half = fn_len + n_params + 3;
+        for (label, off) in [("attn", 0usize), ("ffn", per_half)] {
+            let f = &all[off..off + fn_len];
+            let base = &all[off + fn_len..off + fn_len + n_params];
+            let scale = &all[off + fn_len + n_params..off + per_half];
+            let x: Vec<f64> = (0..n * d).map(|i| ((i % 101) as f64 - 50.0) * 0.02).collect();
+            let a = ref_mixes(&x, f, scale, base, n, 20, 1e-6);
+            // a 1000x larger state, the magnitude of the growth iteration 365 measured (rms 8 vs 3477)
+            let x1000: Vec<f64> = x.iter().map(|v| v * 1000.0).collect();
+            let b = ref_mixes(&x1000, f, scale, base, n, 20, 1e-6);
+            for j in 0..n {
+                assert!((a.pre[j] - b.pre[j]).abs() < 1e-6, "{label}: pre must be scale-invariant at {j}");
+                assert!((a.post[j] - b.post[j]).abs() < 1e-6, "{label}: post must be scale-invariant at {j}");
+            }
+            for jk in 0..n * n {
+                assert!((a.comb[jk] - b.comb[jk]).abs() < 1e-6, "{label}: comb must be scale-invariant at {jk}");
+            }
+            println!("{label}: ref_mixes is scale-invariant on real weights (pre {:.4}..{:.4})",
+                     a.pre.iter().cloned().fold(f64::INFINITY, f64::min),
+                     a.pre.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+        }
+    }
+
     /// THE INVARIANTS THAT PIN `ref_sublayer` TO THE REFERENCE, each one a property of `hc_post` plus sinkhorn:
     ///   * a sublayer returning ZERO leaves each copy as `sum_j comb[i][j] * residual[j]`;
     ///   * with all copies EQUAL and comb rows summing to 1, that is exactly the residual -- an exact identity;
