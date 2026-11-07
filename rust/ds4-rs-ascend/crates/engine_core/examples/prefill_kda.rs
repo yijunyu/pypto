@@ -134,6 +134,9 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                 x[t].copy_from_slice(&bi);
             }
         }
+        // B22: the KDA arm collapses the streams (block input, above) but never advanced them -- only the MLA arm did.
+        let kda_x0: Vec<Vec<f64>> = x.clone();
+        let mut is_kda = false;
         match plan[b].attn {
             engine_core::glm53_plan::Attn::Mla => {
                 // B22: THE ATTENTION MUST RUN ON `hc_pre(streams)`, NOT ON `x`. The old version called `mla_block_n` on `x`
@@ -172,6 +175,7 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                 }
             }
             engine_core::glm53_plan::Attn::Kda => {
+                is_kda = true;
                 let norm_w = engine_core::model_names::dequant_any(g, b, "norm")?;
                 let nw: Vec<f64> = norm_w.iter().map(|v| *v as f64).collect();
                 let mut q = Vec::with_capacity(n);
@@ -286,6 +290,20 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                         x[t][r] += acc;
                     }
                 }
+            }
+        }
+        // B22: the KDA attention's OUTPUT is `x - kda_x0`; advance the streams with it, then re-collapse for the FFN.
+        if is_kda && hc_n > 1 {
+            let f = g.dequant_name(&format!("blk.{b}.hc_attn_fn.weight"))?;
+            let base = g.dequant_name(&format!("blk.{b}.hc_attn_base.weight"))?;
+            let sc = g.dequant_name(&format!("blk.{b}.hc_attn_scale.weight"))?;
+            for t in 0..n {
+                let out: Vec<f64> = x[t].iter().zip(&kda_x0[t]).map(|(p, q)| p - q).collect();
+                let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &hc[t], hc_n, 20, 1e-8);
+                let next = hp.next_state(&hc[t], &out, hc_n);
+                let hp2 = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &next, hc_n, 20, 1e-8);
+                x[t].copy_from_slice(&hp2.block_input(&next, hc_n));
+                hc[t] = next;
             }
         }
         // B22: THE FFN HAD NO HYPER-CONNECTION HERE EITHER -- same wrap as the decode driver, same differencing trick.
