@@ -441,6 +441,16 @@ fn main() -> anyhow::Result<()> {
         }
         let o = block(&params, &q, &k, &v, &gate, 1, &onw, &ogate);
         anyhow::ensure!(o.iter().all(|v| v.is_finite()), "block {b} produced a non-finite value");
+        // SPLIT READ FROM DEQUANT. The per-block time grows with depth (100s -> 172s -> 309s) and MADV_DONTNEED did not fix
+        // it (iteration 273), so the next question is WHICH half grows: mmap page-in (I/O) or IQ1_S -> f32 (CPU).
+        if std::env::var_os("DS4_GLM_PROF").is_some() {
+            let (rd, dq, bytes, calls) = engine_core::glm5_stream::glm_prof_report();
+            println!(
+                "  blk{b} prof: read {:.2}s  dequant {:.2}s  {:.1} MB in {calls} calls",
+                rd / 1e9, dq / 1e9, bytes as f64 / 1e6
+            );
+            engine_core::glm5_stream::glm_prof_reset();
+        }
         // RELEASE THIS BLOCK'S PAGES. Without it the page cache evicts what the NEXT block needs and every block re-reads
         // from the SSD once the model exceeds RAM (Kimi: 100s -> 172s -> 327s per block).
         if std::env::var_os("DS4_RELEASE_PAGES").is_some() {
