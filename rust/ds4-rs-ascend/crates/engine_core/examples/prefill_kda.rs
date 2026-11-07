@@ -288,6 +288,20 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                 }
             }
         }
+        // B22: THE FFN HAD NO HYPER-CONNECTION HERE EITHER -- same wrap as the decode driver, same differencing trick.
+        let mut ffn_hp: Vec<Option<engine_core::hyper_connection::Params>> = Vec::new();
+        let mut ffn_x0: Vec<Vec<f64>> = Vec::new();
+        if hc_n > 1 {
+            let f = g.dequant_name(&format!("blk.{b}.hc_ffn_fn.weight"))?;
+            let base = g.dequant_name(&format!("blk.{b}.hc_ffn_base.weight"))?;
+            let sc = g.dequant_name(&format!("blk.{b}.hc_ffn_scale.weight"))?;
+            for t in 0..n {
+                let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &hc[t], hc_n, 20, 1e-8);
+                x[t] = hp.block_input(&hc[t], hc_n);
+                ffn_x0.push(x[t].clone());
+                ffn_hp.push(Some(hp));
+            }
+        }
         // the FFN, per position
         match plan[b].ffn {
             engine_core::glm53_plan::Ffn::Dense => {
@@ -318,6 +332,12 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                 }
             }
             _ => {}
+        }
+        for t in 0..n {
+            if let Some(hp) = ffn_hp.get(t).and_then(|o| o.as_ref()) {
+                let ffn_out: Vec<f64> = x[t].iter().zip(&ffn_x0[t]).map(|(a, b)| a - b).collect();
+                hc[t] = hp.next_state(&hc[t], &ffn_out, hc_n);
+            }
         }
         if b <= 4 { println!("BLK{b}-TENSOR prefill(after attn+FFN): {:?}", &x[0][..3]); }
     }
