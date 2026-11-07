@@ -245,6 +245,39 @@ pub fn head_collapse(inp_hc: &[f64], fn_w: &[f32], base: &[f32], scale: &[f32], 
 }
 
 #[cfg(test)]
+    /// THE CHECKPOINT'S REAL LAYER-LEVEL SHAPES, as `predict` consumes them:
+    ///   hc_attn_fn [24, 16384]   hc_attn_base [24]   hc_attn_scale [3]
+    /// 24 = 2n + n^2 for n = 4, 16384 = n*d for d = 4096, and the THREE scales are [matrix, in, out].
+    /// Fixtures built from these shapes cannot drift into agreeing with a wrong implementation.
+    #[test]
+    fn predict_accepts_the_checkpoints_real_shapes() {
+        let (n, d) = (4usize, 16usize); // d shrunk from 4096; n is the real one
+        let n_params = 2 * n + n * n;   // 24, as in the file
+        assert_eq!(n_params, 24);
+        // `predict`'s `d` is the FLATTENED width -- `state.len() * state[0].len()` -- so hc_fn is [n_params, n*d].
+        // The real tensor is [24, 16384] with 16384 = 4 x 4096, which is this shape. My first fixture used [24, d].
+        let flat_d = n * d;
+        let f: Vec<f32> = (0..n_params * flat_d).map(|i| ((i * 13 % 17) as f32 - 8.0) * 0.01).collect();
+        let base: Vec<f32> = (0..n_params).map(|i| ((i * 7 % 11) as f32 - 5.0) * 0.1).collect();
+        let scale: Vec<f32> = vec![0.5, 1.0, 2.0];              // THREE, not n_params
+        let streams: Vec<Vec<f64>> = (0..n).map(|h| (0..d).map(|c| ((h * d + c) as f64 * 0.07).sin()).collect()).collect();
+        let hp = Params::predict(&f, &base, &scale, &streams, n, 20, 1e-8);
+        let x = hp.block_input(&streams, n);
+        assert_eq!(x.len(), d);
+        assert!(x.iter().all(|v| v.is_finite()));
+        let next = hp.next_state(&streams, &x, n);
+        assert_eq!(next.len(), n);
+        assert!(next.iter().all(|r| r.len() == d && r.iter().all(|v| v.is_finite())));
+
+        // the finite-difference check: a scale of the wrong length must be caught, not silently ignored
+        let short = vec![1.0f32; 2]; // the 3-element scale is [matrix, in, out]
+        let r = std::panic::catch_unwind(|| {
+            let hp = Params::predict(&f, &base, &short, &streams, n, 20, 1e-8);
+            hp.block_input(&streams, n)
+        });
+        assert!(r.is_err(), "a 2-element scale must be refused, not read past");
+    }
+
     /// THE CHECKPOINT'S REAL SHAPES: `hc_head_fn [4, 16384]`, `hc_head_base [4]`, `hc_head_scale [1]`. A scalar scale must be
     /// broadcast to every copy -- indexing it per copy gave copies 1..3 a scale of 1.0, which is a different function.
     #[test]
