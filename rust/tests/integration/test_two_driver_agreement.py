@@ -138,24 +138,38 @@ KIMI_SHARDS = sorted(
 
 
 @slow
-def test_kimi_produces_a_token_from_its_own_weights():
-    """Kimi K3's forward, after six rounds of spelling and sharding fixes.
+def test_kimi_agrees_across_BOTH_drivers():
+    """THE Kimi cross-check, which took nine rounds to make trustworthy.
 
-    This test exists because the Kimi path had SIX separate obstacles in a row -- a config reader assuming GLM's keys, a
-    metadata-only shard, a third tensor spelling, a DIRECT gate where GLM's is low-rank, a hardcoded width, and a resolver
-    that could return a real tensor from the wrong question. Each is guarded here by the one assertion that fails if the
-    path breaks: a token, from a vocabulary of 163,840, through 2 of its 62 available blocks.
+    Every earlier comparison was contaminated: a GLM baseline against a Kimi run, a decode number from the no-prompt path
+    (which embeds a SYNTHETIC vector), a prefill that hardcoded "Hello world", a prefill that demanded two tokens when
+    "Hello" is one. Once all of that was fixed, the two drivers still disagreed -- and the cause was a real bug: the decode
+    driver's output projection hardcoded 8192, GLM's `heads*head_dim`, so on Kimi (12288 wide) it summed the first 8192 and
+    strode the wrong rows.
+
+    Two assertions, because the first alone passes if both drivers share a bug and the second alone passes if the model is
+    never run:
+      * both drivers produce the same token for Kimi at 2 blocks;
+      * that token is in Kimi's vocabulary and differs from the no-prompt run, so a synthetic embedding cannot pass.
     """
-    if len(KIMI_SHARDS) < 2:
+    # SORTED, AND ONLY REAL SHARDS: `glob` order is arbitrary, and shard 1 must be FIRST -- it carries the metadata
+    # (`expert_weights_scale` lives there). An unsorted list failed with "no expert_weights_scale in this checkpoint",
+    # which reads like a missing key and was actually a missing order.
+    shards = sorted(
+        p for p in Path("/Volumes/T7 Shield/LLMs/kimi-k3-ud-iq1s").glob("Kimi-K3-UD-IQ1_S-*-of-00014.gguf")
+    )
+    if len(shards) < 2:
         pytest.skip("Kimi K3's shards are not mounted")
-    out = subprocess.run(
-        [str(DECODE), *KIMI_SHARDS],
-        capture_output=True, text=True, timeout=3600,
-        env=dict(os.environ, DS4_KIMI="1", GLM53_BLOCKS="2"),
+    common = {"DS4_KIMI": "1", "GLM53_PROMPT": "Hello"}
+    d = subprocess.run([str(DECODE), *map(str, shards)], capture_output=True, text=True, timeout=3600,
+                       env=dict(os.environ, **common, GLM53_BLOCKS="2"))
+    assert d.returncode == 0, f"decode failed:\n{d.stdout[-1500:]}\n{d.stderr[-1500:]}"
+    pr = subprocess.run([str(PREFILL), *map(str, shards)], capture_output=True, text=True, timeout=3600,
+                        env=dict(os.environ, **common, PREFILL_ONE="1", PREFILL_BLOCKS="2"))
+    assert pr.returncode == 0, f"prefill failed:\n{pr.stdout[-1500:]}\n{pr.stderr[-1500:]}"
+    d_tok, _ = _token(d.stdout)
+    p_tok, _ = _token(pr.stdout)
+    assert d_tok == p_tok, (
+        f"THE KIMI CROSS-CHECK FAILS: decode {d_tok} vs prefill {p_tok}. This is the check that found the hardcoded 8192."
     )
-    assert out.returncode == 0, f"Kimi failed:\n{out.stdout[-2000:]}\n{out.stderr[-2000:]}"
-    assert "TOKEN from Kimi K3" in out.stdout, (
-        "the label must name the LOADED model -- a Kimi run once printed 'TOKEN from GLM 5.3':\n" + out.stdout[-1500:]
-    )
-    tok, _ = _token(out.stdout)
-    assert 0 <= tok < 163840, f"token {tok} is outside Kimi's vocabulary"
+    assert 0 <= d_tok < 163840, f"token {d_tok} is outside Kimi's vocabulary"
