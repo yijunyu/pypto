@@ -248,6 +248,9 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                     println!("KDA-INTER blk{b} prefill: x0={:?} xin0={:?} q0={:?} beta0={:?}",
                         x[0][0], xinp[0], q[0][0], params.beta[0]);
                 }
+                if std::env::var_os("GATE_DBG").is_some() {
+                    println!("GATE prefill blk{b}: gate {:?} ogate {:?}", &gate[0][..3], &ogate[..3]);
+                }
                 let out = block(&params, &flat(&q), &flat(&k), &flat(&v), &flat(&gate), n, &onw, &ogate);
                 let wo = engine_core::model_names::dequant_any(g, b, "output")?;
                 for t in 0..n {

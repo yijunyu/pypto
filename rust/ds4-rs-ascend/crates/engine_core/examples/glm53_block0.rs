@@ -416,6 +416,9 @@ fn main() -> anyhow::Result<()> {
             println!("KDA-INTER blk{b} decode: x0={:?} xin0={:?} q0={:?} beta0={:?}",
                 x[0], xin[0], q[0], params.beta[0]);
         }
+        if std::env::var_os("GATE_DBG").is_some() {
+            println!("GATE decode blk{b}: gate {:?} ogate {:?}", &gate[..3], &ogate[..3]);
+        }
         let o = block(&params, &q, &k, &v, &gate, 1, &onw, &ogate);
         anyhow::ensure!(o.iter().all(|v| v.is_finite()), "block {b} produced a non-finite value");
         // SPLIT READ FROM DEQUANT. The per-block time grows with depth (100s -> 172s -> 309s) and MADV_DONTNEED did not fix
