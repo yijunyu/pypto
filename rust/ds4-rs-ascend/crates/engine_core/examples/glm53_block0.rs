@@ -441,6 +441,12 @@ fn main() -> anyhow::Result<()> {
         }
         let o = block(&params, &q, &k, &v, &gate, 1, &onw, &ogate);
         anyhow::ensure!(o.iter().all(|v| v.is_finite()), "block {b} produced a non-finite value");
+        // RELEASE THIS BLOCK'S PAGES. Without it the page cache evicts what the NEXT block needs and every block re-reads
+        // from the SSD once the model exceeds RAM (Kimi: 100s -> 172s -> 327s per block).
+        if std::env::var_os("DS4_RELEASE_PAGES").is_some() {
+            let freed = g.advice_release_prefix(&format!("blk.{b}."));
+            println!("  released {:.1} MB of block {b} pages", freed as f64 / 1e6);
+        }
         // output projection (8192 -> d) then the residual
         let wo = dequant_either(&g, b, "output")?;
         // attn_output is [12288, 7168] for Kimi and [8192, 4096]-shaped for GLM; take the leading d columns

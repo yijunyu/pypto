@@ -254,6 +254,48 @@ impl ShardedGguf {
     pub fn contains(&self, name: &str) -> bool {
         self.by_name.contains_key(name)
     }
+    /// Release the pages of every tensor whose name starts with `prefix`, back to the OS.
+    ///
+    /// WHY: the shards are mmapped `MAP_SHARED` and the OS page cache is the stream. That is free while the working set fits
+    /// in RAM; Kimi K3's ten shards are ~200 GB, so past a few blocks the cache evicts what the NEXT block needs and every
+    /// block re-reads from the SSD. Measured growth: 100s per block at block 1, 172s at 3, 327s at 4.
+    ///
+    /// `MADV_DONTNEED` on file-backed shared pages drops them without losing data -- the file is the backing store, so a
+    /// later read faults them back. Called between blocks with `blk.N.` it keeps only the block being computed resident.
+    ///
+    /// Returns the bytes advised, so a caller can report what it released rather than assume it worked.
+    pub fn advice_release_prefix(&self, prefix: &str) -> u64 {
+        #[cfg(unix)]
+        {
+            const PAGE: usize = 4096;
+            let mut released = 0u64;
+            for (name, h) in &self.by_name {
+                if !name.starts_with(prefix) {
+                    continue;
+                }
+                let shard = &self.shards[h.shard];
+                let base = shard.mmap.as_slice().as_ptr() as usize;
+                let start = base + h.abs_offset as usize;
+                // madvise needs a page-aligned start; the LENGTH may end anywhere.
+                let aligned = start & !(PAGE - 1);
+                let len = (start + h.byte_size as usize).saturating_sub(aligned);
+                // SAFETY: the range lies inside a mapping this struct owns and keeps alive for its lifetime.
+                let rc = unsafe {
+                    libc::madvise(aligned as *mut libc::c_void, len, libc::MADV_DONTNEED)
+                };
+                if rc == 0 {
+                    released += h.byte_size;
+                }
+            }
+            released
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = prefix;
+            0
+        }
+    }
+
     pub fn handle(&self, name: &str) -> Option<&StreamHandle> {
         self.by_name.get(name)
     }
