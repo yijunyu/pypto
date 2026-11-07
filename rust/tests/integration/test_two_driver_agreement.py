@@ -78,6 +78,22 @@ def test_the_two_drivers_agree_on_the_token_and_the_logit():
 
 
 @slow
+@pytest.mark.parametrize("blocks", [2], ids=["2blocks"])
+def test_the_drivers_still_agree_at_a_DEPTH_THAT_RUNS_IN_MINUTES(blocks):
+    """A FAST version of the agreement test, added because the 6-block one takes ~34 minutes and so is skipped in practice.
+
+    The bug that motivated it: `prefill_kda.rs` carried its own hardcoded `1536` q-latent while the decode driver's was
+    derived. At 2 blocks the two drivers still agree (110512), and at 6 they agree (88504) -- so this test guards the
+    cheap case, which is the one that will actually run on every change.
+    """
+    decode = _run(DECODE, {"GLM53_PROMPT": "Hello", "GLM53_BLOCKS": str(blocks)})
+    prefill = _run(PREFILL, {"PREFILL_ONE": "1", "PREFILL_BLOCKS": str(blocks)})
+    d_tok, _ = _token(decode)
+    p_tok, _ = _token(prefill)
+    assert d_tok == p_tok, f"the drivers disagree at {blocks} blocks: decode {d_tok} vs prefill {p_tok}"
+
+
+@slow
 def test_hyper_connections_change_the_token_but_do_not_break_it():
     """The HC path is behind a flag; it must RUN, and it must change the output -- otherwise it is not wired in."""
     without = _run(DECODE, {"GLM53_PROMPT": "Hello", "GLM53_BLOCKS": str(BLOCKS)})
