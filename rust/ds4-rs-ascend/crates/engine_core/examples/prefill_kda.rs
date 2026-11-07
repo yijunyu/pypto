@@ -408,16 +408,22 @@ fn main() -> anyhow::Result<()> {
     println!("PASS: position 0 is identical whether or not a later token is present -- the recurrence is causal");
 
     // THE SAME INVARIANT ON THE MLA PATH, at block 3 (the first MLA block per the file's own schedule).
-    let mla = plan.iter().position(|b| b.attn == engine_core::glm53_plan::Attn::Mla)
-        .ok_or_else(|| anyhow::anyhow!("no MLA block in this checkpoint"))?;
-    let e0 = vec![embed(&g, &v, ids[0], c.d)?];
-    let e01 = vec![embed(&g, &v, ids[0], c.d)?, embed(&g, &v, ids[1], c.d)?];
-    let m1 = mla_block_n(&g, mla, &c, &e0)?;
-    let m2 = mla_block_n(&g, mla, &c, &e01)?;
-    let dm = m1[0].iter().zip(&m2[0]).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
-    println!("MLA block {mla}: position 0 |1-token - 2-token| = {dm:.3e}");
-    anyhow::ensure!(dm < 1e-12, "MLA attention leaked the future: {dm:.3e}");
-    println!("PASS: MLA position 0 is also independent of a later token -- attention is causal");
+    // THE SECOND `ids[1]` SITE -- the MLA causality probe. Guarded like the first: a one-token prompt (Kimi's "Hello") has
+    // no second token, and this panicked at it AFTER the KDA probe had already passed.
+    match plan.iter().position(|b| b.attn == engine_core::glm53_plan::Attn::Mla) {
+        Some(mla) if ids.len() >= 2 => {
+            let e0 = vec![embed(&g, &v, ids[0], c.d)?];
+            let e01 = vec![embed(&g, &v, ids[0], c.d)?, embed(&g, &v, ids[1], c.d)?];
+            let m1 = mla_block_n(&g, mla, &c, &e0)?;
+            let m2 = mla_block_n(&g, mla, &c, &e01)?;
+            let dm = m1[0].iter().zip(&m2[0]).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+            println!("MLA block {mla}: position 0 |1-token - 2-token| = {dm:.3e}");
+            anyhow::ensure!(dm < 1e-12, "MLA attention leaked the future: {dm:.3e}");
+            println!("PASS: MLA position 0 is also independent of a later token -- attention is causal");
+        }
+        Some(mla) => println!("MLA block {mla}: causality probe skipped (the prompt is one token)"),
+        None => println!("no MLA block in this checkpoint: MLA causality probe skipped"),
+    }
 
     // THE INVARIANT AT THE OUTPUT: six blocks, both runs, then the head on position 0. The ARGMAX must match --
     // a prefill that leaked the future would have moved it, and this is the check a person would actually make.
