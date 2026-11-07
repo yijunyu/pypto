@@ -385,7 +385,10 @@ fn main() -> anyhow::Result<()> {
     let prompt = std::env::var("GLM53_PROMPT").unwrap_or_else(|_| "Hello".to_string());
     let ids = v.encode(&prompt);
     println!("prompt -> {ids:?}");
-    anyhow::ensure!(ids.len() == 2, "this example wants exactly two tokens, got {}", ids.len());
+    // ONE TOKEN IS THE CROSS-CHECK AGAINST DECODE, TWO IS THE CAUSALITY CHECK. The example used to demand exactly two, which
+    // made the one-token comparison against `glm53_block0` impossible -- and that comparison is the only way to test the two
+    // drivers against each other.
+    anyhow::ensure!(ids.len() >= 1, "the prompt tokenised to nothing");
 
     // single-token run of token 0
     let one = run(&g, &c, &plan, 1, vec![embed(&g, &v, ids[0], c.d)?], expert_scale)?;
