@@ -94,7 +94,8 @@ def test_the_drivers_still_agree_at_a_DEPTH_THAT_RUNS_IN_MINUTES(blocks):
 
 
 @slow
-def test_hyper_connections_agree_across_BOTH_drivers():
+@pytest.mark.parametrize("blocks", [2, 6], ids=["2blocks", "6blocks"])
+def test_hyper_connections_agree_across_BOTH_drivers(blocks):
     """THE regression test for B14: the prefill accepted `GLM53_HC` and ignored it.
 
     For one round the drivers "agreed" only in the no-HC configuration, because hyper-connections were implemented in decode
@@ -105,14 +106,14 @@ def test_hyper_connections_agree_across_BOTH_drivers():
       * both drivers must produce the SAME token WITH HC on;
       * that token must DIFFER from the no-HC token, so a prefill that ignores the flag still fails.
     """
-    env = {"GLM53_BLOCKS": "2", "GLM53_HC": "1"}
+    env = {"GLM53_BLOCKS": str(blocks), "GLM53_HC": "1"}
     d_hc, _ = _token(_run(DECODE, dict(env, GLM53_PROMPT="Hello")))
-    p_hc, _ = _token(_run(PREFILL, dict(env, PREFILL_ONE="1", PREFILL_BLOCKS="2")))
-    assert "hyper-connections" in _run(PREFILL, dict(env, PREFILL_ONE="1", PREFILL_BLOCKS="2")), (
+    p_hc, _ = _token(_run(PREFILL, dict(env, PREFILL_ONE="1", PREFILL_BLOCKS=str(blocks))))
+    assert "hyper-connections" in _run(PREFILL, dict(env, PREFILL_ONE="1", PREFILL_BLOCKS=str(blocks))), (
         "the prefill must ANNOUNCE its hyper-connections; silence means it ignored the flag"
     )
     assert d_hc == p_hc, f"the drivers disagree WITH hyper-connections: decode {d_hc} vs prefill {p_hc}"
-    d_plain, _ = _token(_run(DECODE, {"GLM53_PROMPT": "Hello", "GLM53_BLOCKS": "2"}))
+    d_plain, _ = _token(_run(DECODE, {"GLM53_PROMPT": "Hello", "GLM53_BLOCKS": str(blocks)}))
     assert d_hc != d_plain, (
         f"hyper-connections did not change the token ({d_hc} == {d_plain}), so this test cannot tell a wired path from an "
         f"ignored flag -- exactly the state B14 described"
