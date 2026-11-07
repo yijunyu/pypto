@@ -245,6 +245,32 @@ pub fn head_collapse(inp_hc: &[f64], fn_w: &[f32], base: &[f32], scale: &[f32], 
 }
 
 #[cfg(test)]
+    /// `n_hc = 1`: one copy means nothing to mix, so the weighted sum must CANCEL and the collapse return its input.
+    /// This is the degenerate case that a `hc_mult = 1` ablation would run, and it is the only case where the answer is
+    /// known independently of the weights.
+    #[test]
+    fn one_copy_collapses_to_itself() {
+        let (n, d) = (1usize, 7usize);
+        let inp: Vec<f64> = (0..d).map(|i| ((i * 5 % 9) as f64 - 4.0) * 0.37).collect();
+        // any head, any base, any scale -- the single weight cancels against its own normalisation
+        for (fscale, base, scale) in [(0.0f32, 0.0f32, 1.0f32), (0.9, -2.5, 0.79), (-1.3, 4.0, 3.0)] {
+            let fn_w: Vec<f32> = (0..d * n).map(|i| ((i * 3 % 7) as f32 - 3.0) * fscale).collect();
+            let out = head_collapse(&inp, &fn_w, &[base], &[scale], n, d, 1e-6);
+            for c in 0..d {
+                assert!(
+                    (out[c] - inp[c]).abs() < 1e-10,
+                    "n_hc=1 must return the input at {c}: got {} want {} (fscale {fscale}, base {base})",
+                    out[c], inp[c]
+                );
+            }
+        }
+        // and with TWO copies the answer is NOT the input, so the test above is not vacuous
+        let inp2: Vec<f64> = (0..2 * d).map(|i| ((i * 7 % 11) as f64 - 5.0) * 0.21).collect();
+        let fn_w2: Vec<f32> = (0..2 * (2 * d)).map(|i| ((i * 3 % 5) as f32 - 2.0) * 0.5).collect();
+        let out2 = head_collapse(&inp2, &fn_w2, &[0.0, 0.0], &[1.0], 2, d, 1e-6);
+        assert!(out2.iter().zip(&inp2[..d]).any(|(a, b)| (a - b).abs() > 1e-9), "two copies must mix");
+    }
+
     /// THE CHECKPOINT'S REAL LAYER-LEVEL SHAPES, as `predict` consumes them:
     ///   hc_attn_fn [24, 16384]   hc_attn_base [24]   hc_attn_scale [3]
     /// 24 = 2n + n^2 for n = 4, 16384 = n*d for d = 4096, and the THREE scales are [matrix, in, out].
