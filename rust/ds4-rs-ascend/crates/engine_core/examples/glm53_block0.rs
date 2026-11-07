@@ -447,7 +447,9 @@ fn main() -> anyhow::Result<()> {
             let (rd, dq, bytes, calls) = engine_core::glm5_stream::glm_prof_report();
             println!(
                 "  blk{b} prof: read {:.2}s  dequant {:.2}s  {:.1} MB in {calls} calls",
-                rd / 1e9, dq / 1e9, bytes as f64 / 1e6
+                // glm_prof_report returns MILLISECONDS (ns / 1e6), not nanoseconds. I divided by 1e9 and printed 0.00,
+                // then wrote "the profiler's read timer is broken" -- the profiler was right and my arithmetic was not.
+                rd / 1e3, dq / 1e3, bytes as f64 / 1e6
             );
             engine_core::glm5_stream::glm_prof_reset();
         }
