@@ -33,9 +33,12 @@ fn embed(g: &ShardedGguf, v: &Vocab, tok: u32, d: usize) -> anyhow::Result<Vec<f
 /// ONE MLA BLOCK over N positions, causally: positions `s <= t` only.
 fn mla_block_n(g: &ShardedGguf, b: usize, c: &Ctx, xs: &[Vec<f64>]) -> anyhow::Result<Vec<Vec<f64>>> {
     let n = xs.len();
+    // EVERY MLA WIDTH IS DERIVED -- the decode driver had these removed in rounds 291-292 and the prefill never did, which
+    // is why the prefill could not serve Kimi (B15).
+    //   hd  from `attn_k_b`: [lat, hd, heads] contiguous, so hd = len / (lat * heads)
+    //   lat from `attn_kv_a_norm`, which is the width the k/v projections consume (kv_a_mqa emits MORE: Kimi 576 = 512+64)
+    //   q_out from `attn_q_b`
     let heads = c.heads;
-    let hd = 256usize;
-    let lat = 512usize;
     let mv = |w: &[f32], xv: &[f64], k: usize, nn: usize| -> Vec<f64> {
         (0..nn).map(|r| (0..k).map(|cc| w[r * k + cc] as f64 * xv[cc]).sum()).collect()
     };
@@ -47,6 +50,9 @@ fn mla_block_n(g: &ShardedGguf, b: usize, c: &Ctx, xs: &[Vec<f64>]) -> anyhow::R
     let wkb = g.dequant_name(&format!("blk.{b}.attn_k_b.weight"))?;
     let wvb = g.dequant_name(&format!("blk.{b}.attn_v_b.weight"))?;
     let wo = g.dequant_name(&format!("blk.{b}.attn_output.weight"))?;
+    let lat = g.dequant_name(&format!("blk.{b}.attn_kv_a_norm.weight"))?.len();
+    anyhow::ensure!(wkb.len() % (lat * heads) == 0, "k_b is {} not {lat} x hd x {heads}", wkb.len());
+    let hd = wkb.len() / (lat * heads);
     let mut qs = Vec::with_capacity(n);
     let mut ks = Vec::with_capacity(n);
     let mut vs = Vec::with_capacity(n);
