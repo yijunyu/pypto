@@ -3627,6 +3627,7 @@ pub fn decode_attn_layer_with<A: AttentionDispatcher>(
 }
 
 #[cfg(test)]
+
 mod tests {
  use super::*;
  use std::sync::Mutex;
@@ -5312,7 +5313,56 @@ mod tests {
  /// switches the dot to `dot_f32_antirez`. Reuses existing env (no new
  /// toggle). Called twice per layer per decode step (Attn + Ffn halves
  /// × 43 layers), so per-call ULP differences compound.
+  /// THE TWO IMPLEMENTATIONS OF THE SAME FORMULA MUST AGREE.
+ ///
+ /// `hc_collapse_norm` (the DS4 path, f32) and `hyper_connection::ref_mixes` (transcribed from the reference, f64) both
+ /// implement `kernel.py:426-459`. If either drifts, the DS4 path and the GLM/Kimi path stop matching the reference **in
+ /// opposite directions** -- and no existing test would notice, because the cross-driver test compares two drivers that both
+ /// call the same one.
  #[test]
+ fn the_two_implementations_of_the_reference_hc_agree() {
+     let mut p = dummy_params();
+     p.d_embd = 16;
+     p.hc_eps = 1e-6;
+     let n_hc = p.n_hc as usize;
+     let d_embd = p.d_embd as usize;
+     let hc_dim = n_hc * d_embd;
+     let mix_hc = 2 * n_hc + n_hc * n_hc;
+
+     let mut seed = 0x5EED5EEDu64;
+     let mut lcg = |s: &mut u64| -> f32 {
+         *s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+         (((*s >> 33) as u32) as f32) / (u32::MAX as f32) * 2.0 - 1.0
+     };
+     let prev_hc: Vec<f32> = (0..hc_dim).map(|_| lcg(&mut seed) * 0.5).collect();
+     let hc_fn: Vec<f32> = (0..hc_dim * mix_hc).map(|_| lcg(&mut seed) * 0.05).collect();
+     let hc_base: Vec<f32> = (0..mix_hc).map(|_| lcg(&mut seed) * 0.4).collect();
+     let hc_scale = vec![0.9f32, 1.1, 0.7];
+
+     let d = CpuAttentionDispatcher;
+     let (_cur, _normed, split) = d.hc_collapse_norm(&p, HcKind::Attn, &hc_fn, &hc_scale, &hc_base, &prev_hc, None);
+
+     let flat64: Vec<f64> = prev_hc.iter().map(|v| *v as f64).collect();
+     let r = crate::hyper_connection::ref_mixes(&flat64, &hc_fn, &hc_scale, &hc_base, n_hc, 20, p.hc_eps as f64);
+
+     let close = |a: f32, b: f64, what: &str, i: usize| {
+         let (a, b) = (a as f64, b);
+         let denom = b.abs().max(1e-6);
+         // 1e-3 relative: f32 vs f64 through 20 sinkhorn iterations drifts ~2.3e-4 (measured), which is precision, not
+         // formula. A DIFFERENT formula differs by orders of magnitude, so this tolerance still catches one.
+         assert!((a - b).abs() / denom < 1e-3 || (a - b).abs() < 1e-5,
+                 "{what}[{i}]: hc_collapse_norm {a:.7} vs ref_mixes {b:.7}");
+     };
+     for i in 0..n_hc {
+         close(split[i], r.pre[i], "pre", i);
+         close(split[n_hc + i], r.post[i], "post", i);
+     }
+     for i in 0..n_hc * n_hc {
+         close(split[2 * n_hc + i], r.comb[i], "comb", i);
+     }
+ }
+
+#[test]
  fn hc_collapse_norm_mix_dot_antirez_fidelity_gate_switches_reducer() {
  let _env = ENV_LOCK.write().unwrap_or_else(|p| p.into_inner());
 
