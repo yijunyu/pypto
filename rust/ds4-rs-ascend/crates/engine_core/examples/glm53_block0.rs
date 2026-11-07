@@ -449,7 +449,13 @@ fn main() -> anyhow::Result<()> {
         // output projection (8192 -> d) then the residual
         let wo = engine_core::model_names::dequant_any(&g, b, "output")?;
         // attn_output is [12288, 7168] for Kimi and [8192, 4096]-shaped for GLM; take the leading d columns
-        let op = (0..d).map(|r| (0..8192.min(o.len())).map(|c| (wo.get(r * 8192 + c).copied().unwrap_or(0.0) as f64) * o[c]).sum::<f64>()).collect::<Vec<_>>();
+        // THE OUTPUT PROJECTION'S WIDTH IS THE TENSOR'S, NOT GLM's. This hardcoded 8192 -- GLM's `heads*head_dim` --
+        // and indexed `wo` with stride 8192, so on Kimi (12288 wide) it summed only the first 8192 of 12288 values AND
+        // read the wrong rows. GLM agreed with the prefill because 8192 IS its width; Kimi did not (10374 vs 36382).
+        // The prefill always used `o.len()`; this is the same expression.
+        let width = wo.len() / d;
+        anyhow::ensure!(width == o.len(), "attn_output is {width} wide but the block produced {}", o.len());
+        let op = (0..d).map(|r| (0..width).map(|c| wo[r * width + c] as f64 * o[c]).sum::<f64>()).collect::<Vec<_>>();
         for i in 0..d { x[i] += op[i]; }
         // THE DENSE FFN, when the block has one: ffn_norm -> gate/up -> SiLU -> down -> residual. GLM's leading
         // blocks carry `ffn_gate`/`ffn_up`/`ffn_down` at 12288 wide; the MoE blocks carry stacked experts instead,
