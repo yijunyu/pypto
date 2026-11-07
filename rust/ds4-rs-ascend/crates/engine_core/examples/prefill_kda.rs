@@ -123,6 +123,8 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
     for b in 0..blocks {
         // THE STREAMS BECOME THE BLOCK'S INPUT.
         if hc_n > 1 {
+            // A BLOCK-INPUT MIX, not a sublayer: this only produces the block's input, so it calls predict+block_input
+            // directly. `sublayer` (which also advances the streams) is used after the attention residual, below.
             let f = g.dequant_name(&format!("blk.{b}.hc_attn_fn.weight"))?;
             let base = g.dequant_name(&format!("blk.{b}.hc_attn_base.weight"))?;
             let sc = g.dequant_name(&format!("blk.{b}.hc_attn_scale.weight"))?;
@@ -146,8 +148,14 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                     let base = g.dequant_name(&format!("blk.{b}.hc_attn_base.weight"))?;
                     let sc = g.dequant_name(&format!("blk.{b}.hc_attn_scale.weight"))?;
                     for t in 0..n {
-                        let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &hc[t], hc_n, 20, 1e-8);
-                        hc[t] = hp.next_state(&hc[t], &x[t], hc_n);
+                        // SUBLAYER: predict -> block_input -> (the sublayer returns the attention OUTPUT) -> residual ->
+                        // next_state. The residual add and the stream advance are inside the call, so this cannot be done
+                        // in the wrong order. `outs[t]` was already added to `x[t]` above; passing it here would double it,
+                        // so the sublayer returns ZERO -- the residual is then x itself, which is what the loop meant.
+                        let (xr, next) = engine_core::hyper_connection::sublayer(
+                            &f, &base, &sc, &hc[t], hc_n, 20, 1e-8, |_| vec![0.0f64; c.d]);
+                        x[t].copy_from_slice(&xr);
+                        hc[t] = next;
                     }
                 }
                 for t in 0..n {
