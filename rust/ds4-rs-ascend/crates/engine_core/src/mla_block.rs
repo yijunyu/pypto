@@ -61,8 +61,56 @@ pub fn mla_1token(
     mv(out, &vcat, v_out, d)
 }
 
+
+/// THE OUTPUT PROJECTION, with its width taken from the tensor.
+///
+/// This existed in both drivers as a hand-written loop, and the decode driver's had **8192** hardcoded -- GLM's
+/// `heads*head_dim`. On Kimi the block produces 12288 values, so it summed only the first 8192 AND strode `wo` by 8192
+/// instead of 12288, reading the wrong rows. GLM agreed with the prefill because 8192 IS its width; Kimi produced 10374
+/// from decode and 36382 from prefill until this was found by comparing the two.
+///
+/// `wo` is `[width, d]` row-major, so `width = wo.len() / d` -- asserted against the block's own output length, because a
+/// silent mismatch here is a plausible-looking number, not an error.
+pub fn output_projection(wo: &[f32], o: &[f64], d: usize) -> Vec<f64> {
+    assert!(d > 0, "d must be positive");
+    assert_eq!(wo.len() % d, 0, "attn_output is {} not a multiple of {d}", wo.len());
+    let width = wo.len() / d;
+    assert_eq!(width, o.len(), "attn_output is {width} wide but the block produced {}", o.len());
+    (0..d)
+        .map(|r| (0..width).map(|c| wo[r * width + c] as f64 * o[c]).sum())
+        .collect()
+}
+
 #[cfg(test)]
 mod regression {
+    /// THE 8192 BUG: a width taken from the driver instead of the tensor.
+    ///
+    /// Kimi's block produces 12288 values. Summing the first 8192 of them AND striding `wo` by 8192 gives a number that is
+    /// finite, plausible and wrong -- which is why it survived nine rounds of looking. This test computes both.
+    #[test]
+    fn the_output_projection_uses_the_tensors_width_not_8192() {
+        let d = 4usize;
+        let kimi_width = 12usize; // stands in for 12288
+        let wo: Vec<f32> = (0..kimi_width * d).map(|i| (i as f32 * 0.017).sin()).collect();
+        let o: Vec<f64> = (0..kimi_width).map(|i| (i as f64 * 0.11).cos()).collect();
+        let right = output_projection(&wo, &o, d);
+        assert_eq!(right.len(), d);
+        assert!(right.iter().all(|v| v.is_finite()));
+
+        // the BUG, reproduced exactly: width hardcoded to 8 instead of 12
+        let buggy: Vec<f64> = (0..d)
+            .map(|r| (0..8.min(o.len())).map(|c| wo.get(r * 8 + c).copied().unwrap_or(0.0) as f64 * o[c]).sum())
+            .collect();
+        assert!(
+            right.iter().zip(&buggy).any(|(a, b)| (a - b).abs() > 1e-9),
+            "the hardcoded-8 projection produced the same answer as the correct one, so this test cannot detect the bug"
+        );
+
+        // and a width the driver cannot guess from the block's output is REFUSED, not silently used
+        let short = vec![0.0f64; kimi_width - 1];
+        assert!(std::panic::catch_unwind(|| output_projection(&wo, &short, d)).is_err());
+    }
+
     use super::*;
 
     /// The per-head loop this replaced, kept verbatim as the reference it was.
