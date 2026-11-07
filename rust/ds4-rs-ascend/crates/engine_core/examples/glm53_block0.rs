@@ -475,6 +475,20 @@ fn main() -> anyhow::Result<()> {
         // THE DENSE FFN, when the block has one: ffn_norm -> gate/up -> SiLU -> down -> residual. GLM's leading
         // blocks carry `ffn_gate`/`ffn_up`/`ffn_down` at 12288 wide; the MoE blocks carry stacked experts instead,
         // which are NOT implemented, so their FFN is skipped and SAID so.
+        // B22: THE FFN HAD NO HYPER-CONNECTION EITHER. The reference applies `hc_mixes`/`hc_pre` before the FFN and
+        // `hc_post` after it, exactly as it does for attention. `ffn_x0` captures the input so the FFN's OUTPUT can be
+        // recovered by differencing without rewriting each branch's `x[i] += ...`.
+        let mut ffn_hp = None;
+        let mut ffn_x0: Vec<f64> = Vec::new();
+        if hc_n > 1 {
+            let f = g.dequant_name(&format!("blk.{b}.hc_ffn_fn.weight"))?;
+            let base = g.dequant_name(&format!("blk.{b}.hc_ffn_base.weight"))?;
+            let sc = g.dequant_name(&format!("blk.{b}.hc_ffn_scale.weight"))?;
+            let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &streams, hc_n, hc_iters, hc_eps);
+            x = hp.block_input(&streams, hc_n);
+            ffn_x0 = x.clone();
+            ffn_hp = Some(hp);
+        }
         if plan[b].ffn == engine_core::glm53_plan::Ffn::Dense {
             let fnorm_w = g.dequant_name(&format!("blk.{b}.ffn_norm.weight"))?;
             let fin = engine_core::kda_block::gated_rms_norm(&x, &fnorm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], cfg.rms_norm_eps as f64);
@@ -493,6 +507,11 @@ fn main() -> anyhow::Result<()> {
             moe_used = used;
         } else {
             println!("  block {b}: FFN is {:?} -- skipped", plan[b].ffn);
+        }
+        if let Some(hp) = ffn_hp {
+            // the FFN's output is `x - x0`; `next_state` is `hc_post` and takes the OUTPUT, not the incremented vector
+            let ffn_out: Vec<f64> = x.iter().zip(&ffn_x0).map(|(a, b)| a - b).collect();
+            streams = hp.next_state(&streams, &ffn_out, hc_n);
         }
         let rms = (x.iter().map(|v| v * v).sum::<f64>() / d as f64).sqrt();
         println!("block {b}: rms {rms:.4}  ({:.1}s)", t0.elapsed().as_secs_f64());
