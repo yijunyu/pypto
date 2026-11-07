@@ -245,6 +245,51 @@ pub fn head_collapse(inp_hc: &[f64], fn_w: &[f32], base: &[f32], scale: &[f32], 
 }
 
 #[cfg(test)]
+    fn bytes_to_f32(raw: &[u8]) -> Vec<f32> {
+        raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
+    }
+
+    /// THE REAL `hc_head_*` TENSORS, if the fixture is present.
+    ///
+    /// `nc_head_fn` is `[4, 16384]` = 65,536 f32 = 262,144 bytes, copied out of the checkpoint as RAW f32 (the package lives
+    /// on a host with no cargo). Concatenated in the order fn, base, scale.
+    ///
+    /// With the real weights this asserts what no synthetic fixture can:
+    ///   * `hc_head_base` is [4] and `hc_head_scale` is [1] -- the SCALAR that broke the per-copy index;
+    ///   * `n_hc = 1` returns the input USING REAL WEIGHTS;
+    ///   * the full 4-copy collapse is finite and is NOT the plain mean.
+    ///
+    /// Skipped when the fixture is absent, so the suite does not depend on a file a fresh checkout will not have.
+    #[test]
+    fn the_real_head_tensors_satisfy_the_contract() {
+        let path = std::path::Path::new("/tmp/hc_head_raw.bin");
+        if !path.exists() {
+            eprintln!("SKIP: /tmp/hc_head_raw.bin is not present (the real hc_head_* tensors)");
+            return;
+        }
+        let raw = std::fs::read(path).unwrap();
+        let all = bytes_to_f32(&raw);
+        let (n_hc, d) = (4usize, 4096usize);
+        let fn_len = n_hc * n_hc * d; // 65,536
+        assert_eq!(all.len(), fn_len + n_hc + 1, "fixture is fn [4,16384] + base [4] + scale [1]");
+        let f = &all[..fn_len];
+        let base = &all[fn_len..fn_len + n_hc];
+        let scale = &all[fn_len + n_hc..];
+        assert_eq!(scale.len(), 1, "hc_head_scale is [1] -- the scalar that broke the per-copy index");
+
+        // n_hc = 1 with REAL weights: still the identity
+        let one = head_collapse(&[0.37, -1.1, 2.0], &f[..3], &[base[0]], scale, 1, 3, 1e-6);
+        assert_eq!(one, vec![0.37, -1.1, 2.0]);
+
+        // the full 4-copy collapse on a real-shaped input
+        let inp: Vec<f64> = (0..n_hc * d).map(|i| ((i % 97) as f64 - 48.0) * 1e-3).collect();
+        let out = head_collapse(&inp, &f, base, scale, n_hc, d, 1e-6);
+        assert_eq!(out.len(), d);
+        assert!(out.iter().all(|v| v.is_finite()), "the real collapse produced a non-finite value");
+        let mean: Vec<f64> = (0..d).map(|c| (0..n_hc).map(|h| inp[h * d + c]).sum::<f64>() / n_hc as f64).collect();
+        assert!(out.iter().zip(&mean).any(|(a, b)| (a - b).abs() > 1e-9), "the real head produced the plain mean");
+    }
+
     /// `n_hc = 1`: one copy means nothing to mix, so the weighted sum must CANCEL and the collapse return its input.
     /// This is the degenerate case that a `hc_mult = 1` ablation would run, and it is the only case where the answer is
     /// known independently of the weights.
