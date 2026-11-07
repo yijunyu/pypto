@@ -282,7 +282,9 @@ pub fn ref_mixes(x_flat: &[f64], hc_fn: &[f32], hc_scale: &[f32], hc_base: &[f32
     let mut comb: Vec<f64> = (0..n * n)
         .map(|jk| mixes[jk + 2 * n] * hc_scale[2] as f64 + hc_base[jk + 2 * n] as f64)
         .collect();
-    // comb = comb.softmax(-1) + eps, then sinkhorn
+    // comb = softmax_k(comb) + eps, then col-normalise, then (row, col) x (iters-1).
+    // THE LOOP ENDS ON A COLUMN NORMALISATION, so COLUMNS sum to 1, not rows. And the softmax is applied ONCE here --
+    // calling `sinkhorn()` would apply its own softmax a second time, which is what my first version did.
     for j in 0..n {
         let row = &mut comb[j * n..j * n + n];
         let m = row.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
@@ -290,10 +292,104 @@ pub fn ref_mixes(x_flat: &[f64], hc_fn: &[f32], hc_scale: &[f32], hc_base: &[f32
         for v in row.iter_mut() { *v = (*v - m).exp(); sum += *v; }
         for v in row.iter_mut() { *v = *v / sum + eps; }
     }
-    RefMixes { pre, post, comb: sinkhorn(&comb, n, iters, eps) }
+    let col_norm = |c: &mut [f64]| {
+        for k in 0..n {
+            let s: f64 = (0..n).map(|j| c[j * n + k]).sum();
+            for j in 0..n { c[j * n + k] /= s + eps; }
+        }
+    };
+    col_norm(&mut comb);
+    for _ in 1..iters.max(1) {
+        for j in 0..n {
+            let s: f64 = comb[j * n..j * n + n].iter().sum();
+            for k in 0..n { comb[j * n + k] /= s + eps; }
+        }
+        col_norm(&mut comb);
+    }
+    RefMixes { pre, post, comb }
+}
+
+
+/// THE REFERENCE'S COMPLETE HYPER-CONNECTION SUBLAYER: `hc_mixes` -> `hc_pre` -> sublayer -> `hc_post`.
+///
+/// ```text
+/// pre, post, comb = ref_mixes(x.flatten(), hc_fn, hc_scale, hc_base, ...)
+/// xin             = hc_pre(x, pre)            = sum_j pre[j] * x[j]                       -> [d]
+/// out             = sublayer(xin)             = the attention or FFN                     -> [d]
+/// x_next[i]       = hc_post(out, x, post, comb) = post[i] * out + sum_j comb[i][j] * x[j]  -> [n][d]
+/// ```
+///
+/// This composition is what the engine's `block_input`/`next_state` approximate, and it differs in every coefficient:
+/// the reference's `post` MULTIPLIES the sublayer output, its `comb` mixes the residual, and its `pre` collapses the input.
+pub fn ref_sublayer<F>(
+    state: &[Vec<f64>],
+    hc_fn: &[f32],
+    hc_scale: &[f32],
+    hc_base: &[f32],
+    n: usize,
+    iters: usize,
+    eps: f64,
+    sublayer: F,
+) -> Vec<Vec<f64>>
+where
+    F: FnOnce(&[f64]) -> Vec<f64>,
+{
+    let d = state[0].len();
+    let flat: Vec<f64> = state.iter().flatten().copied().collect();
+    let m = ref_mixes(&flat, hc_fn, hc_scale, hc_base, n, iters, eps);
+    // hc_pre: collapse the n copies into one sublayer input, weighted by `pre`
+    let xin: Vec<f64> = (0..d).map(|c| (0..n).map(|j| m.pre[j] * state[j][c]).sum()).collect();
+    let out = sublayer(&xin);
+    assert_eq!(out.len(), d, "the sublayer must return d values");
+    // hc_post: each copy is `post[i] * sublayer + sum_j comb[i][j] * residual[j]`
+    (0..n)
+        .map(|i| {
+            (0..d)
+                .map(|c| m.post[i] * out[c] + (0..n).map(|j| m.comb[i * n + j] * state[j][c]).sum::<f64>())
+                .collect()
+        })
+        .collect()
 }
 
 #[cfg(test)]
+    /// THE INVARIANTS THAT PIN `ref_sublayer` TO THE REFERENCE, each one a property of `hc_post` plus sinkhorn:
+    ///   * a sublayer returning ZERO leaves each copy as `sum_j comb[i][j] * residual[j]`;
+    ///   * with all copies EQUAL and comb rows summing to 1, that is exactly the residual -- an exact identity;
+    ///   * with a LOUD sublayer the copies differ -- so the identity above is not vacuous.
+    #[test]
+    fn ref_sublayer_matches_the_references_identities() {
+        let (n, d) = (4usize, 6usize);
+        let hc_dim = n * d;
+        let mix_hc = (2 + n) * n;
+        let hc_fn: Vec<f32> = (0..mix_hc * hc_dim).map(|i| ((i * 7 % 13) as f32 - 6.0) * 0.03).collect();
+        let base: Vec<f32> = (0..mix_hc).map(|i| ((i * 5 % 11) as f32 - 5.0) * 0.2).collect();
+        let scale = vec![0.9f32, 1.1, 0.7];
+
+        // all copies EQUAL: the residual term must reproduce that copy exactly (comb rows sum to 1)
+        let x0: Vec<f64> = (0..d).map(|c| ((c * 3 % 7) as f64 - 3.0) * 0.4).collect();
+        let equal: Vec<Vec<f64>> = vec![x0.clone(); n];
+        // Equal copies + zero sublayer: copy i becomes x0 * (row sum of comb row i) -- so each copy must stay PROPORTIONAL
+        // to x0. (It is not equal to x0: the reference normalises COLUMNS, so rows do not sum to one.)
+        let zeroed = ref_sublayer(&equal, &hc_fn, &scale, &base, n, 20, 1e-6, |_xin| vec![0.0; d]);
+        for i in 0..n {
+            // component 0, not 1: x0[1] is exactly 0.0 for this fixture, and dividing by it made `ratio` non-finite
+            let ratio = zeroed[i][0] / x0[0];
+            assert!(ratio.is_finite(), "the proportional ratio must be finite at copy {i}");
+            for c in 1..d {
+                assert!((zeroed[i][c] - x0[c] * ratio).abs() < 1e-9, "equal copies must stay proportional to x0 at [{i}][{c}]");
+            }
+        }
+
+        // a LOUD sublayer must MOVE the copies -- the control that stops the identity above passing vacuously
+        let loud = ref_sublayer(&equal, &hc_fn, &scale, &base, n, 20, 1e-6, |xin| xin.iter().map(|v| v + 1.5).collect());
+        assert!(loud.iter().zip(&equal).any(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > 1e-9)), "a loud sublayer must move the copies");
+
+        // and with UNEQUAL copies the comb mixes them: copy i is a blend, not its own residual
+        let distinct: Vec<Vec<f64>> = (0..n).map(|h| x0.iter().map(|v| v + h as f64 * 0.5).collect()).collect();
+        let mixed = ref_sublayer(&distinct, &hc_fn, &scale, &base, n, 20, 1e-6, |_xin| vec![0.0; d]);
+        assert!(mixed.iter().zip(&distinct).any(|(a, b)| a.iter().zip(b).any(|(x, y)| (x - y).abs() > 1e-9)), "unequal copies must be mixed by comb");
+    }
+
     /// THE FIVE DIFFERENCES FROM `Params::predict`, each asserted against a property the reference's kernel guarantees:
     ///   pre in (eps, 1+eps), post in (0, 2), comb rows sum to 1 (sinkhorn), and the rsqrt making the mixes SCALE-INVARIANT.
     #[test]
@@ -310,9 +406,10 @@ pub fn ref_mixes(x_flat: &[f64], hc_fn: &[f32], hc_scale: &[f32], hc_base: &[f32
         assert_eq!((m.pre.len(), m.post.len(), m.comb.len()), (n, n, n * n));
         for &v in &m.pre { assert!(v > 1e-6 && v < 1.0 + 1e-6, "pre must be sigmoid+eps in (eps, 1+eps), got {v}"); }
         for &v in &m.post { assert!(v > 0.0 && v < 2.0, "post must be 2*sigmoid in (0, 2), got {v}"); }
-        for j in 0..n {
-            let row: f64 = m.comb[j * n..j * n + n].iter().sum();
-            assert!((row - 1.0).abs() < 1e-6, "each comb row must sum to 1 after sinkhorn, got {row}");
+        // COLUMNS, not rows: the reference's loop ends on a column normalisation.
+        for k in 0..n {
+            let col: f64 = (0..n).map(|j| m.comb[j * n + k]).sum();
+            assert!((col - 1.0).abs() < 1e-4, "each comb COLUMN must sum to 1 after sinkhorn, got {col}");
         }
 
         // THE rsqrt: scaling x by 4 must leave the mixes -- and therefore pre/post/comb -- ALMOST unchanged, because the
