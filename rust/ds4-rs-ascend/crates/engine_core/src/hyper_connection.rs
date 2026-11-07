@@ -223,9 +223,17 @@ pub fn head_collapse(inp_hc: &[f64], fn_w: &[f32], base: &[f32], scale: &[f32], 
         .map(|h| (0..hc_dim).map(|c| fn_w[h * hc_dim + c] as f64 * flat[c]).sum())
         .collect();
     // sigmoid, biased and scaled by the head's own base/scale, then the weighted sum over copies
+    // `hc_head_scale` IS A SCALAR IN THE CHECKPOINT (shape [1]), while `hc_head_base` is [n_hc]. Indexing the scale per copy
+    // silently gave copies 1..n a scale of 1.0 -- found by reading the real tensor's shape, not by running the model.
+    assert!(
+        scale.len() == 1 || scale.len() >= n_hc,
+        "hc_head_scale must be a scalar or one per copy (got {})",
+        scale.len()
+    );
+    let sc = |h: usize| scale[if scale.len() == 1 { 0 } else { h }] as f64;
     let w: Vec<f64> = (0..n_hc)
         .map(|h| {
-            let z = pre[h] * scale.get(h).copied().unwrap_or(1.0) as f64 + base.get(h).copied().unwrap_or(0.0) as f64;
+            let z = pre[h] * sc(h) + base.get(h).copied().unwrap_or(0.0) as f64;
             1.0 / (1.0 + (-z).exp())
         })
         .collect();
@@ -237,6 +245,25 @@ pub fn head_collapse(inp_hc: &[f64], fn_w: &[f32], base: &[f32], scale: &[f32], 
 }
 
 #[cfg(test)]
+    /// THE CHECKPOINT'S REAL SHAPES: `hc_head_fn [4, 16384]`, `hc_head_base [4]`, `hc_head_scale [1]`. A scalar scale must be
+    /// broadcast to every copy -- indexing it per copy gave copies 1..3 a scale of 1.0, which is a different function.
+    #[test]
+    fn a_scalar_scale_is_broadcast_to_every_copy() {
+        let (n, d) = (4usize, 3usize);
+        let inp: Vec<f64> = (0..n * d).map(|i| ((i * 5 % 11) as f64 - 5.0) * 0.3).collect();
+        let mut fn_w = vec![0.0f32; (n * d) * n];
+        for h in 0..n { fn_w[h * (n * d) + h] = 1.0; }        // each copy's own diagonal
+        let base = vec![-2.5f32, -3.0, -2.8, 2.5];             // the real base's shape and rough values
+        let scalar = vec![0.79f32];                            // the real scale's shape
+        let per_copy = vec![0.79f32; n];
+        let a = head_collapse(&inp, &fn_w, &base, &scalar, n, d, 1e-6);
+        let b = head_collapse(&inp, &fn_w, &base, &per_copy, n, d, 1e-6);
+        for c in 0..d {
+            assert!((a[c] - b[c]).abs() < 1e-12, "a scalar scale must equal the same value repeated, at {c}");
+        }
+        assert!(a.iter().all(|v| v.is_finite()));
+    }
+
     /// THE POINT OF B19: the learned collapse and the plain mean are DIFFERENT functions, and on any non-uniform head their
     /// answers differ. If this test could not distinguish them, swapping the call sites would be unverifiable.
     #[test]
