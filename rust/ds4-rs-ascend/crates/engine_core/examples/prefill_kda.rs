@@ -251,7 +251,14 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                 if std::env::var_os("GATE_DBG").is_some() {
                     println!("GATE prefill blk{b}: gate {:?} ogate {:?}", &gate[0][..3], &ogate[..3]);
                 }
-                let out = block(&params, &flat(&q), &flat(&k), &flat(&v), &flat(&gate), n, &onw, &ogate);
+                if std::env::var_os("CONST_DBG").is_some() {
+            println!("CONST prefill blk{b}: conv_q[0] {:?} a_log[0] {:?} dt_bias[0] {:?}",
+                params.conv_q[0], params.a_log[0], params.dt_bias[0]);
+        }
+        let out = block(&params, &flat(&q), &flat(&k), &flat(&v), &flat(&gate), n, &onw, &ogate);
+                if std::env::var_os("CONST_DBG").is_some() {
+                    println!("CONST prefill blk{b}: block_out {:?}", &out[..3]);
+                }
                 let wo = engine_core::model_names::dequant_any(g, b, "output")?;
                 for t in 0..n {
                     let o = &out[t * c.heads * c.head_dim..(t + 1) * c.heads * c.head_dim];

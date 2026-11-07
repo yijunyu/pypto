@@ -419,7 +419,14 @@ fn main() -> anyhow::Result<()> {
         if std::env::var_os("GATE_DBG").is_some() {
             println!("GATE decode blk{b}: gate {:?} ogate {:?}", &gate[..3], &ogate[..3]);
         }
+        if std::env::var_os("CONST_DBG").is_some() {
+            println!("CONST decode blk{b}: conv_q[0] {:?} a_log[0] {:?} dt_bias[0] {:?}",
+                params.conv_q[0], params.a_log[0], params.dt_bias[0]);
+        }
         let o = block(&params, &q, &k, &v, &gate, 1, &onw, &ogate);
+        if std::env::var_os("CONST_DBG").is_some() {
+            println!("CONST decode blk{b}: block_out {:?}", &o[..3]);
+        }
         anyhow::ensure!(o.iter().all(|v| v.is_finite()), "block {b} produced a non-finite value");
         // SPLIT READ FROM DEQUANT. The per-block time grows with depth (100s -> 172s -> 309s) and MADV_DONTNEED did not fix
         // it (iteration 273), so the next question is WHICH half grows: mmap page-in (I/O) or IQ1_S -> f32 (CPU).
