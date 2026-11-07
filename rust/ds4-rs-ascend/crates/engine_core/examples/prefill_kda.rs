@@ -158,8 +158,11 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                 let mut gate = Vec::with_capacity(n);
                 for t in 0..n {
                     let xin = gated_rms_norm(&x[t], &nw, &vec![1.0; c.d], c.eps);
-                    for (dst, name) in [(&mut q, "kda_q"), (&mut k, "kda_k"), (&mut v, "kda_v")] {
-                        let w = g.dequant_name(&format!("blk.{b}.{name}.weight"))?;
+                    // THE PROJECTIONS GO THROUGH THE LIBRARY RESOLVER TOO. These three were formatted differently from the
+                    // 17 that were routed last round, which is why the prefill still asked for `blk.0.kda_q.weight` after
+                    // Kimi's config and schedule both worked.
+                    for (dst, base) in [(&mut q, "q"), (&mut k, "k"), (&mut v, "v")] {
+                        let w = engine_core::model_names::dequant_any(g, b, base)?;
                         dst.push((0..c.heads * c.head_dim)
                             .map(|r| (0..c.d).map(|cc| w[r * c.d + cc] as f64 * xin[cc]).sum())
                             .collect::<Vec<f64>>());
@@ -207,8 +210,22 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
                     eps: c.eps,
                 };
                 let onw = vec![1.0f64; c.head_dim];
-                let ogate = {
-                    // THE REAL output gate per position
+                // THE OUTPUT GATE COMES IN TWO SHAPES, and the shapes say which: GLM factorises it (`kda_g_a` + `kda_g_b`,
+                // low-rank) and Kimi applies ONE matrix (`ssm_g`, direct). Same difference as the decode driver's B14, in a
+                // second place -- which is exactly what "two copies of the naming" costs.
+                let ogate = if let Ok(wg) = engine_core::model_names::dequant_any(g, b, "g") {
+                    anyhow::ensure!(wg.len() == c.heads * c.head_dim * c.d, "direct gate is {} not {}x{}", wg.len(), c.heads * c.head_dim, c.d);
+                    let mut v = Vec::with_capacity(n * c.heads * c.head_dim);
+                    for t in 0..n {
+                        let xin = gated_rms_norm(&x[t], &nw, &vec![1.0; c.d], c.eps);
+                        for r in 0..c.heads * c.head_dim {
+                            let z: f64 = (0..c.d).map(|cc| wg[r * c.d + cc] as f64 * xin[cc]).sum();
+                            v.push(1.0 / (1.0 + (-z).exp()));
+                        }
+                    }
+                    v
+                } else {
+                    // THE REAL output gate per position (the low-rank pair)
                     let ga = engine_core::model_names::dequant_any(g, b, "g_a")?;
                     let gb = engine_core::model_names::dequant_any(g, b, "g_b")?;
                     let mut v = Vec::with_capacity(n * c.heads * c.head_dim);
@@ -278,7 +295,7 @@ fn run(g: &ShardedGguf, c: &Ctx, plan: &[engine_core::glm53_plan::BlockPlan], bl
 
 /// `kda_*_conv` is [4, 1, C]: the FOUR taps of each of C channels, stored tap-major.
 fn load_conv(g: &ShardedGguf, b: usize, which: &str, channels: usize) -> anyhow::Result<Vec<[f64; 4]>> {
-    let raw = g.dequant_name(&format!("blk.{b}.{which}.weight"))?;
+    let raw = engine_core::model_names::dequant_any(g, b, &which.replace("kda_", ""))?;
     anyhow::ensure!(raw.len() == 4 * channels, "{which} is {} not 4 x {channels}", raw.len());
     Ok((0..channels)
         .map(|c| [raw[c] as f64, raw[channels + c] as f64, raw[2 * channels + c] as f64, raw[3 * channels + c] as f64])
@@ -346,7 +363,16 @@ fn main() -> anyhow::Result<()> {
             ShardedGguf::open_paths(&all)?
         }
     };
-    let c = Ctx { d: cfg.hidden_size, heads: 64, head_dim: 128, eps: cfg.rms_norm_eps as f64 };
+    // THE HEAD COUNT IS THE MODEL'S, NOT GLM's. Hardcoded 64 made Kimi fail at "kda_a_log is 96 not 64" -- its a_log is
+    // per head (96), so the count has to come from the config.
+    let heads = if std::env::var_os("DS4_KIMI").is_some() {
+        g0.meta.iter().find(|(k, _)| k.ends_with("attention.head_count"))
+            .and_then(|(_, v)| match v { engine_core::gguf::MetaValue::U32(x) => Some(*x as usize), _ => None })
+            .unwrap_or(64)
+    } else {
+        64
+    };
+    let c = Ctx { d: cfg.hidden_size, heads, head_dim: 128, eps: cfg.rms_norm_eps as f64 };
     anyhow::ensure!(plan[0].attn == engine_core::glm53_plan::Attn::Kda, "block 0 must be KDA");
 
     let ids = v.encode("Hello world");
