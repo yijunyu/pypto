@@ -188,6 +188,26 @@ pub fn sublayer<F>(
 where
     F: FnOnce(&[f64]) -> Vec<f64>,
 {
+    // THE REFERENCE PATH, behind `HC_REFERENCE=1` so the default stays byte-identical until B20's criterion is met.
+    // The reference does not collapse-add-re-expand: it takes `hc_pre` of the ORIGINAL streams, runs the sublayer, and builds
+    // each copy as `post[i]*out + sum_j comb[i][j]*x[j]`. The returned "residual" is the collapsed sublayer input `xin`, which
+    // is what callers log as the stream.
+    if std::env::var_os("HC_REFERENCE").is_some() {
+        let d = streams[0].len();
+        let flat: Vec<f64> = streams.iter().flatten().copied().collect();
+        let m = ref_mixes(&flat, hc_fn, hc_scale, hc_base, n, iters, eps);
+        let xin: Vec<f64> = (0..d).map(|c| (0..n).map(|j| m.pre[j] * streams[j][c]).sum()).collect();
+        let out = sublayer(&xin);
+        assert_eq!(out.len(), d, "sublayer changed the width: {} vs {}", out.len(), d);
+        let next: Vec<Vec<f64>> = (0..n)
+            .map(|i| {
+                (0..d)
+                    .map(|c| m.post[i] * out[c] + (0..n).map(|j| m.comb[i * n + j] * streams[j][c]).sum::<f64>())
+                    .collect()
+            })
+            .collect();
+        return (xin, next);
+    }
     let hp = Params::predict(hc_fn, hc_base, hc_scale, streams, n, iters, eps);
     let x = hp.block_input(streams, n);
     let out = sublayer(&x);
