@@ -197,7 +197,75 @@ where
     (residual, next)
 }
 
+
+/// THE LEARNED HEAD COLLAPSE: `output_hc_head_one` (antirez ds4.c:7654-7681), in f64.
+///
+/// `rms_norm(inp_hc, unit gamma) -> matvec(hc_head_fn) -> sigmoid -> weighted sum over the n_hc copies`.
+///
+/// WHY THIS EXISTS: the DS4 examples call `decode_step::hc_mean_collapse`, a PLAIN AVERAGE, and the module that owns it says so
+/// -- *"this is the plain average ... NOT the learned `output_hc_head_one` collapse"*. The checkpoint carries `hc_head_fn`,
+/// `hc_head_base` and `hc_head_scale` (24 non-layer `hc_*` tensors), so the learned path is available and unused.
+///
+/// It is written here, data-free and testable, so that swapping the call sites does not require the 476 GB checkpoint.
+pub fn head_collapse(inp_hc: &[f64], fn_w: &[f32], base: &[f32], scale: &[f32], n_hc: usize, d: usize, eps: f64) -> Vec<f64> {
+    let hc_dim = n_hc * d;
+    assert_eq!(inp_hc.len(), hc_dim, "inp_hc must be n_hc*d");
+    assert_eq!(fn_w.len(), hc_dim * n_hc, "hc_head_fn must be [n_hc*d, n_hc]");
+    // rms_norm against a unit gamma, as the reference's ParallelHead does
+    let ms = inp_hc.iter().map(|v| v * v).sum::<f64>() / hc_dim as f64;
+    let r = 1.0 / (ms + eps).sqrt();
+    let flat: Vec<f64> = inp_hc.iter().map(|v| v * r).collect();
+    for (i, v) in flat.iter().enumerate() {
+        assert!(v.is_finite() || i < hc_dim, "non-finite after the norm");
+    }
+    // one pre-activation per copy
+    let pre: Vec<f64> = (0..n_hc)
+        .map(|h| (0..hc_dim).map(|c| fn_w[h * hc_dim + c] as f64 * flat[c]).sum())
+        .collect();
+    // sigmoid, biased and scaled by the head's own base/scale, then the weighted sum over copies
+    let w: Vec<f64> = (0..n_hc)
+        .map(|h| {
+            let z = pre[h] * scale.get(h).copied().unwrap_or(1.0) as f64 + base.get(h).copied().unwrap_or(0.0) as f64;
+            1.0 / (1.0 + (-z).exp())
+        })
+        .collect();
+    let total: f64 = w.iter().sum();
+    let total = if total.abs() < 1e-30 { 1.0 } else { total };
+    (0..d)
+        .map(|c| (0..n_hc).map(|h| w[h] * inp_hc[h * d + c]).sum::<f64>() / total)
+        .collect()
+}
+
 #[cfg(test)]
+    /// THE POINT OF B19: the learned collapse and the plain mean are DIFFERENT functions, and on any non-uniform head their
+    /// answers differ. If this test could not distinguish them, swapping the call sites would be unverifiable.
+    #[test]
+    fn the_learned_collapse_is_not_the_plain_mean() {
+        let (n, d) = (4usize, 5usize);
+        let inp: Vec<f64> = (0..n * d).map(|i| ((i * 7 % 13) as f64 - 6.0) * 0.21).collect();
+        let mean: Vec<f64> = (0..d).map(|c| (0..n).map(|h| inp[h * d + c]).sum::<f64>() / n as f64).collect();
+
+        // a head whose copies get DIFFERENT weights: fn picks out copy 0 strongly
+        let mut fn_w = vec![0.0f32; (n * d) * n];
+        for c in 0..(n * d) { fn_w[0 * (n * d) + c] = 1.0; }
+        let base = vec![0.0f32; n];
+        let scale = vec![1.0f32; n];
+        let learned = head_collapse(&inp, &fn_w, &base, &scale, n, d, 1e-6);
+        assert_eq!(learned.len(), d);
+        assert!(learned.iter().all(|v| v.is_finite()));
+        assert!(
+            learned.iter().zip(&mean).any(|(a, b)| (a - b).abs() > 1e-6),
+            "the learned collapse produced the plain mean -- this test cannot detect the bug it exists for"
+        );
+
+        // and with an all-zero fn the sigmoids are all 0.5, so the result IS the mean -- a control
+        let zero_fn = vec![0.0f32; (n * d) * n];
+        let flat = head_collapse(&inp, &zero_fn, &base, &scale, n, d, 1e-6);
+        for c in 0..d {
+            assert!((flat[c] - mean[c]).abs() < 1e-12, "with a zero head the collapse must reduce to the mean at {c}");
+        }
+    }
+
     /// THE SUBLAYER SHAPE, and the two things it must get right: the streams ADVANCE, and an identity sublayer leaves the
     /// residual equal to the block input.
     #[test]
