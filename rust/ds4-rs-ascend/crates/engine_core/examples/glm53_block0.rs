@@ -26,19 +26,19 @@ fn mla_block_1token(g: &ShardedGguf, b: usize, x: &[f64], d: usize, eps: f64) ->
     // THE TESTED CODE IS THE CODE THAT RUNS. The arithmetic moved to `engine_core::mla_block`, whose three regression tests
     // pin the flat matmul to the per-head loop it replaced, the two-latent rule, and whole-block sanity. This function now
     // only fetches tensors and hands them over -- if the numbers move, the library changed, not the glue.
-    let norm_w = dequant_either(&g, b, "norm")?;
+    let norm_w = engine_core::model_names::dequant_any(&g, b, "norm")?;
     let xin = engine_core::kda_block::gated_rms_norm(
         x,
         &norm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(),
         &vec![1.0f64; d],
         eps,
     );
-    let q_a = dequant_either(&g, b, "q_a")?;
-    let q_b = dequant_either(&g, b, "q_b")?;
-    let kv_a = dequant_either(&g, b, "kv_a_mqa")?;
-    let kv_a_norm = dequant_either(&g, b, "kv_a_norm")?.len();
-    let v_b = dequant_either(&g, b, "v_b")?;
-    let out = dequant_either(&g, b, "output")?;
+    let q_a = engine_core::model_names::dequant_any(&g, b, "q_a")?;
+    let q_b = engine_core::model_names::dequant_any(&g, b, "q_b")?;
+    let kv_a = engine_core::model_names::dequant_any(&g, b, "kv_a_mqa")?;
+    let kv_a_norm = engine_core::model_names::dequant_any(&g, b, "kv_a_norm")?.len();
+    let v_b = engine_core::model_names::dequant_any(&g, b, "v_b")?;
+    let out = engine_core::model_names::dequant_any(&g, b, "output")?;
     Ok(engine_core::mla_block::mla_1token(
         &q_a, &q_b, &kv_a, kv_a_norm, &v_b, &out, &xin, d,
     ))
@@ -87,39 +87,6 @@ fn load_conv(g: &ShardedGguf, b: usize, which: &str, channels: usize) -> anyhow:
 /// GLM 5.3 names the linear projections `kda_q`/`kda_k`/`kda_v`/`kda_output`; Kimi K3 names the same tensors
 /// `attn_q`/`attn_k`/`attn_v`/`attn_output`. The forward was GLM-spelled throughout and failed on Kimi with
 /// "tensor not found: blk.0.kda_q.weight" -- the same class of mismatch the SCHEDULE hit one round earlier.
-fn dequant_either(g: &ShardedGguf, b: usize, base: &str) -> anyhow::Result<Vec<f32>> {
-    // CANDIDATES ARE PER-BASE, NOT PER-PREFIX. My previous version tried every prefix for every base, which meant
-    // `blk.N.ssm_a` was reachable from a call asking for a dt_bias -- a tensor that exists and is wrong. Worse, it used
-    // GLM's SUFFIXES as names (`"a"` for `kda_a_log`, `"bias"` for `kda_dt_bias`), so GLM stopped producing tokens after
-    // forty rounds of working.
-    //
-    //   GLM 5.3: kda_q/k/v, kda_output, kda_a_log, kda_dt_bias, kda_beta, kda_f_a/f_b, kda_g_a/g_b
-    //   Kimi K3: attn_q/k/v, attn_output, ssm_a,     ssm_dt.bias,  ssm_beta,  ssm_f_a/f_b,  ssm_g (DIRECT)
-    let names: Vec<String> = match base {
-        "a_log" => vec![format!("blk.{b}.kda_a_log.weight"), format!("blk.{b}.ssm_a")],
-        "dt_bias" => vec![format!("blk.{b}.kda_dt_bias.weight"), format!("blk.{b}.ssm_dt.bias")],
-        "beta" => vec![format!("blk.{b}.kda_beta.weight"), format!("blk.{b}.ssm_beta.weight")],
-        "g" => vec![format!("blk.{b}.kda_g.weight"), format!("blk.{b}.ssm_g.weight")],
-        other => vec![
-            format!("blk.{b}.kda_{other}.weight"),
-            format!("blk.{b}.attn_{other}.weight"),
-            format!("blk.{b}.ssm_{other}.weight"),
-        ],
-    };
-    let mut last = None;
-    for name in &names {
-        match g.dequant_name(name) {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                if std::env::var_os("SPELL_DEBUG").is_some() {
-                    println!("  spelling {name}: {e}");
-                }
-                last = Some(e);
-            }
-        }
-    }
-    Err(last.unwrap_or_else(|| anyhow::anyhow!("no spelling of {base} in block {b}")))
-}
 
 fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).map(PathBuf::from)
@@ -226,7 +193,7 @@ fn main() -> anyhow::Result<()> {
     };
     let d = cfg.hidden_size;
     // The tensors the file itself names for block 0 (read, not assumed).
-    let wq = dequant_either(&g, 0, "q")?;
+    let wq = engine_core::model_names::dequant_any(&g, 0, "q")?;
     println!("kda_q dequantised: {} values", wq.len());
     // THE HEAD COUNT COMES FROM THE TENSOR. `kda_q` is [d, heads*head_dim]: 8192 for GLM (64 x 128), 12288 for Kimi
     // (96 x 128). A hardcoded 64 refused Kimi's weights with "88080384 not 8192 x 7168" -- and my previous attempt at this
@@ -278,8 +245,8 @@ fn main() -> anyhow::Result<()> {
             .collect()
     };
     let q = proj(&wq);
-    let k = proj(&dequant_either(&g, 0, "k")?);
-    let v = proj(&dequant_either(&g, 0, "v")?);
+    let k = proj(&engine_core::model_names::dequant_any(&g, 0, "k")?);
+    let v = proj(&engine_core::model_names::dequant_any(&g, 0, "v")?);
     println!("projections: q {} k {} v {}", q.len(), k.len(), v.len());
 
     let onw = vec![1.0f64; head_dim];
@@ -352,9 +319,9 @@ fn main() -> anyhow::Result<()> {
         }
         let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
         let xin = engine_core::kda_block::gated_rms_norm(&x, &norm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], cfg.rms_norm_eps as f64);
-        let wq = dequant_either(&g, b, "q")?;
-        let wk = dequant_either(&g, b, "k")?;
-        let wv = dequant_either(&g, b, "v")?;
+        let wq = engine_core::model_names::dequant_any(&g, b, "q")?;
+        let wk = engine_core::model_names::dequant_any(&g, b, "k")?;
+        let wv = engine_core::model_names::dequant_any(&g, b, "v")?;
         let proj = |w: &[f32], xv: &[f64]| -> Vec<f64> {
             (0..heads * head_dim).map(|r| (0..d).map(|c| w[r * d + c] as f64 * xv[c]).sum()).collect()
         };
@@ -367,7 +334,7 @@ fn main() -> anyhow::Result<()> {
             // ([4,1,8192]) and beta is [4096,64], neither of which `BlockParams` can hold.
             heads, head_dim,
             a_log: {
-                let raw = dequant_either(&g, b, "a_log")?;
+                let raw = engine_core::model_names::dequant_any(&g, b, "a_log")?;
                 anyhow::ensure!(raw.len() == heads, "kda_a_log is {} not {heads}", raw.len());
                 raw.iter().map(|v| *v as f64).collect()
             },
@@ -378,7 +345,7 @@ fn main() -> anyhow::Result<()> {
             conv_v: load_conv(&g, b, "kda_v_conv", heads * head_dim)?,
             // THE REAL dt BIAS: kda_dt_bias is [8192], one value per channel.
             dt_bias: {
-                let raw = dequant_either(&g, b, "dt_bias")?;
+                let raw = engine_core::model_names::dequant_any(&g, b, "dt_bias")?;
                 anyhow::ensure!(raw.len() == heads * head_dim, "kda_dt_bias is {} not {}", raw.len(), heads * head_dim);
                 raw.iter().map(|v| *v as f64).collect()
             },
@@ -387,7 +354,7 @@ fn main() -> anyhow::Result<()> {
             // the alternative reading is per (channel, head) values used directly, which the recurrence's
             // per-head `beta` cannot consume. If the reading is wrong every block is wrong in the same way.
             beta: {
-                let raw = dequant_either(&g, b, "beta")?;
+                let raw = engine_core::model_names::dequant_any(&g, b, "beta")?;
                 anyhow::ensure!(raw.len() == d * heads, "kda_beta is {} not {d} x {heads}", raw.len());
                 (0..heads)
                     .map(|h| {
@@ -399,8 +366,8 @@ fn main() -> anyhow::Result<()> {
             eps: cfg.rms_norm_eps as f64,
         };
         // THE TIME STEP, from the block's own f-gate: dt = f_b(f_a(normed x)) + dt_bias, 8192 channels.
-        let fa = dequant_either(&g, b, "f_a")?;
-        let fb = dequant_either(&g, b, "f_b")?;
+        let fa = engine_core::model_names::dequant_any(&g, b, "f_a")?;
+        let fb = engine_core::model_names::dequant_any(&g, b, "f_b")?;
         let hid: Vec<f64> = (0..128)
             .map(|r| (0..d).map(|c| fa[r * d + c] as f64 * xin[c]).sum())
             .collect();
@@ -412,7 +379,7 @@ fn main() -> anyhow::Result<()> {
         //   Kimi K3: ONE DIRECT matrix -- ssm_g [d, heads*head_dim]   (its f-gate is still low-rank)
         // Reading only the pair failed on Kimi with "tensor not found: blk.0.ssm_dt.g_a"; a direct matrix is tried FIRST
         // and the pair is the fallback, because `ssm_g` and `kda_g_a` cannot both exist for one block.
-        let ogate: Vec<f64> = if let Ok(wg) = dequant_either(&g, b, "g") {
+        let ogate: Vec<f64> = if let Ok(wg) = engine_core::model_names::dequant_any(&g, b, "g") {
             if wg.len() == (heads * head_dim) * d {
                 (0..heads * head_dim)
                     .map(|r| {
@@ -425,8 +392,8 @@ fn main() -> anyhow::Result<()> {
             }
         } else {
             // the low-rank pair
-            let ga = dequant_either(&g, b, "g_a")?;
-            let gb = dequant_either(&g, b, "g_b")?;
+            let ga = engine_core::model_names::dequant_any(&g, b, "g_a")?;
+            let gb = engine_core::model_names::dequant_any(&g, b, "g_b")?;
             let ghid: Vec<f64> = (0..128).map(|r| (0..d).map(|c| ga[r * d + c] as f64 * xin[c]).sum()).collect();
             (0..heads * head_dim)
                 .map(|r| {
@@ -460,7 +427,7 @@ fn main() -> anyhow::Result<()> {
             println!("  released {:.1} MB of block {b} pages", freed as f64 / 1e6);
         }
         // output projection (8192 -> d) then the residual
-        let wo = dequant_either(&g, b, "output")?;
+        let wo = engine_core::model_names::dequant_any(&g, b, "output")?;
         // attn_output is [12288, 7168] for Kimi and [8192, 4096]-shaped for GLM; take the leading d columns
         let op = (0..d).map(|r| (0..8192.min(o.len())).map(|c| (wo.get(r * 8192 + c).copied().unwrap_or(0.0) as f64) * o[c]).sum::<f64>()).collect::<Vec<_>>();
         for i in 0..d { x[i] += op[i]; }

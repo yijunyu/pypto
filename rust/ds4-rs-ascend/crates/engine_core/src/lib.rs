@@ -33,6 +33,7 @@ pub mod glm53_ffn;
 pub mod glm53_plan;
 
 pub mod mla_block;
+pub mod model_names;
 #[path = "moe.rs"]
 pub mod moe;
 
