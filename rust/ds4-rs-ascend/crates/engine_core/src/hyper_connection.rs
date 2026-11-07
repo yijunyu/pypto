@@ -256,7 +256,7 @@ pub fn head_collapse(inp_hc: &[f64], fn_w: &[f32], base: &[f32], scale: &[f32], 
     fn predict_satisfies_the_real_layer_tensors() {
         let path = std::path::Path::new("/tmp/hc_layer_raw.bin");
         if !path.exists() {
-            eprintln!("SKIP: /tmp/hc_layer_raw.bin is not present (the real layer-0 hc_* tensors)");
+            eprintln!("SKIP: /tmp/hc_layer_raw.bin absent -- run tools/fetch_hc_fixtures.sh to fetch the real layer-0 hc_* tensors");
             return;
         }
         let raw = std::fs::read(path).unwrap();
@@ -310,7 +310,7 @@ pub fn head_collapse(inp_hc: &[f64], fn_w: &[f32], base: &[f32], scale: &[f32], 
     fn the_real_head_tensors_satisfy_the_contract() {
         let path = std::path::Path::new("/tmp/hc_head_raw.bin");
         if !path.exists() {
-            eprintln!("SKIP: /tmp/hc_head_raw.bin is not present (the real hc_head_* tensors)");
+            eprintln!("SKIP: /tmp/hc_head_raw.bin absent -- run tools/fetch_hc_fixtures.sh to fetch the real hc_head_* tensors");
             return;
         }
         let raw = std::fs::read(path).unwrap();
