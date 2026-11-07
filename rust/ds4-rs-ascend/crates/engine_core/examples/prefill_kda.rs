@@ -393,7 +393,14 @@ fn main() -> anyhow::Result<()> {
     // single-token run of token 0
     let one = run(&g, &c, &plan, 1, vec![embed(&g, &v, ids[0], c.d)?], expert_scale)?;
     // two-token run of the same token followed by another
-    let two = run(&g, &c, &plan, 1, vec![embed(&g, &v, ids[0], c.d)?, embed(&g, &v, ids[1], c.d)?], expert_scale)?;
+    // THE CAUSALITY CHECK NEEDS TWO TOKENS; THE CROSS-CHECK AGAINST DECODE NEEDS ONE. A one-token prompt used to reach
+    // `ids[1]` and panic ("len is 1 but the index is 1"), so the causality probe is now conditional on there being a second
+    // token. Kimi's "Hello" is one token, which is what made the cross-check impossible before this round.
+    let two = if ids.len() >= 2 {
+        run(&g, &c, &plan, 1, vec![embed(&g, &v, ids[0], c.d)?, embed(&g, &v, ids[1], c.d)?], expert_scale)?
+    } else {
+        one.clone()
+    };
 
     let diff = one[0].iter().zip(&two[0]).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
     println!("position 0 after block 0: |1-token - 2-token| = {diff:.3e}");
