@@ -329,6 +329,17 @@ fn main() -> anyhow::Result<()> {
             }
             continue;
         }
+        // B22: THE KDA BRANCH HAD NO HYPER-CONNECTION AT ALL. The reference applies `hc_mixes`/`hc_pre` before EVERY sublayer,
+        // on every block; only the MLA branch did, so KDA blocks carried `streams` forward untouched.
+        let mut kda_hp = None;
+        if hc_n > 1 {
+            let f = g.dequant_name(&format!("blk.{b}.hc_attn_fn.weight"))?;
+            let base = g.dequant_name(&format!("blk.{b}.hc_attn_base.weight"))?;
+            let sc = g.dequant_name(&format!("blk.{b}.hc_attn_scale.weight"))?;
+            let hp = engine_core::hyper_connection::Params::predict(&f, &base, &sc, &streams, hc_n, hc_iters, hc_eps);
+            x = hp.block_input(&streams, hc_n);
+            kda_hp = Some(hp);
+        }
         let norm_w = g.dequant_name(&format!("blk.{b}.attn_norm.weight"))?;
         let xin = engine_core::kda_block::gated_rms_norm(&x, &norm_w.iter().map(|v| *v as f64).collect::<Vec<_>>(), &vec![1.0f64; d], cfg.rms_norm_eps as f64);
         let wq = engine_core::model_names::dequant_any(&g, b, "q")?;
@@ -457,6 +468,10 @@ fn main() -> anyhow::Result<()> {
         // The prefill always used `o.len()`; this is the same expression.
         let op = engine_core::mla_block::output_projection(&wo, &o, d);
         for i in 0..d { x[i] += op[i]; }
+        if let Some(hp) = kda_hp {
+            // `next_state` is `hc_post`; the block output is `op`, not `x` (which is already `xin + op`)
+            streams = hp.next_state(&streams, &op, hc_n);
+        }
         // THE DENSE FFN, when the block has one: ffn_norm -> gate/up -> SiLU -> down -> residual. GLM's leading
         // blocks carry `ffn_gate`/`ffn_up`/`ffn_down` at 12288 wide; the MoE blocks carry stacked experts instead,
         // which are NOT implemented, so their FFN is skipped and SAID so.
